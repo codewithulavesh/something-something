@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Github, Mail, Star, Edit3, Check, X, Camera } from 'lucide-react';
+import { Github, Mail, Star, Edit3, Check, X, Code, Trophy, Briefcase, ExternalLink, Globe } from 'lucide-react';
 import { useRealtime } from '@/hooks/useRealtime';
 
 export default function StudentProfile() {
@@ -42,197 +42,114 @@ export default function StudentProfile() {
     fetchStats();
   }, [profile]);
 
-  useRealtime([
-    { table: 'profiles', filter: `id=eq.${profile?.id}`, onData: () => refreshProfile() },
-  ], [profile?.id]);
+  useRealtime([{ table: 'profiles', filter: `id=eq.${profile?.id}`, onData: () => refreshProfile() }], [profile?.id]);
 
   const save = async () => {
     if (!profile) return;
-    if (!name.trim()) { toast.error('Name is required'); return; }
     setSaving(true);
     const { error } = await supabase.from('profiles').update({
       name: name.trim(),
       bio: bio.trim(),
       github_url: github.trim(),
-      updated_at: new Date().toISOString(),
     }).eq('id', profile.id);
-    if (error) { toast.error(error.message); }
-    else {
-      toast.success('Profile updated');
-      await refreshProfile();
-      setEditing(false);
-    }
+    if (!error) { toast.success('Profile modernized'); setEditing(false); await refreshProfile(); }
     setSaving(false);
   };
 
-  const cancel = () => {
-    setName(profile?.name || '');
-    setBio(profile?.bio || '');
-    setGithub(profile?.github_url || '');
-    setEditing(false);
-  };
-
-  const roleColor: Record<string, string> = {
-    student: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
-    company: 'bg-purple-500/15 text-purple-400 border-purple-500/20',
-    admin: 'bg-red-500/15 text-red-400 border-red-500/20',
-  };
-
   return (
-    <div className="max-w-2xl animate-fade-in space-y-6">
+    <div className="max-w-4xl mx-auto space-y-8 animate-fade-in pb-12">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-foreground">Profile</h1>
-        {!editing && (
-          <Button
-            variant="outline"
-            size="sm"
-            id="edit-profile-btn"
-            onClick={() => setEditing(true)}
-          >
-            <Edit3 className="w-3.5 h-3.5 mr-1.5" />Edit
-          </Button>
-        )}
+        <h1 className="text-3xl font-extrabold tracking-tight">Talent Profile</h1>
+        <Button variant="outline" size="sm" className="h-9 px-6 font-bold" onClick={() => (editing ? setEditing(false) : setEditing(true))}>
+           {editing ? <X className="w-4 h-4 mr-2 text-destructive" /> : <Edit3 className="w-4 h-4 mr-2 text-primary" />}
+           {editing ? 'Cancel' : 'Edit Profile'}
+        </Button>
       </div>
 
-      {/* Hero Card */}
-      <Card className="shadow-card overflow-hidden">
-        <div className="h-20 gradient-primary" />
-        <CardContent className="pt-0 pb-5">
-          <div className="flex items-end justify-between -mt-10 mb-4">
-            <div className="relative">
-              <div className="w-20 h-20 rounded-2xl gradient-primary border-4 border-card flex items-center justify-center text-primary-foreground text-2xl font-bold shadow-lg">
-                {name?.charAt(0)?.toUpperCase() || 'U'}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-start">
+        {/* Left Column: Basic Info */}
+        <div className="md:col-span-1 space-y-6">
+           <Card className="shadow-elevated border-none bg-card overflow-hidden">
+              <div className="h-28 gradient-primary relative">
+                 <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-20 h-20 rounded-2xl bg-card border-4 border-card shadow-xl flex items-center justify-center text-4xl font-black text-primary">
+                   {name?.charAt(0).toUpperCase()}
+                 </div>
               </div>
-            </div>
-            <Badge variant="secondary" className={`border text-xs capitalize ${roleColor[profile?.role || 'student']}`}>
-              {profile?.role}
-            </Badge>
-          </div>
-          <div>
-            {editing ? (
-              <Input
-                id="profile-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="text-lg font-bold h-9 mb-1"
-                placeholder="Your name"
-              />
-            ) : (
-              <h2 className="text-lg font-bold text-foreground">{profile?.name || 'Unnamed User'}</h2>
-            )}
-            <div className="flex items-center gap-2 text-sm text-muted-foreground mt-0.5">
-              <Mail className="w-3.5 h-3.5" />
-              <span>{profile?.email}</span>
-            </div>
-            {profile?.role === 'student' && (
-              <div className="flex items-center gap-1 mt-1">
-                <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
-                <span className="text-sm font-medium text-foreground">{profile?.skill_score}</span>
-                <span className="text-xs text-muted-foreground">skill score</span>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+              <CardContent className="pt-12 pb-6 text-center">
+                 <h2 className="text-xl font-black text-foreground">{name}</h2>
+                 <p className="text-xs font-bold text-primary uppercase tracking-[0.15em] mt-1">Full-Stack Engineer</p>
+                 <div className="flex items-center justify-center gap-1.5 mt-3 text-muted-foreground">
+                    <Mail className="w-3 h-3" /> <span className="text-[11px] font-medium">{profile?.email}</span>
+                 </div>
+                 <div className="mt-6 flex flex-wrap justify-center gap-1.5">
+                    <Badge className="bg-emerald-500/10 text-emerald-500 border-none shadow-none text-[10px] py-0 px-2 uppercase font-bold">Verified Score: {profile?.skill_score || 0}</Badge>
+                 </div>
+              </CardContent>
+           </Card>
 
-      {/* Stats Row */}
-      {profile?.role === 'student' && (
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label: 'Total Bids', value: stats.bids },
-            { label: 'Teams Joined', value: stats.teams },
-            { label: 'Reviews', value: stats.reviews },
-          ].map((s) => (
-            <div key={s.label} className="text-center p-3 rounded-xl bg-card border border-border">
-              <p className="text-xl font-bold text-foreground">{s.value}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{s.label}</p>
-            </div>
-          ))}
+           <Card className="shadow-card border-none bg-card p-4 space-y-4">
+              <h3 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest pl-1">Talent Stats</h3>
+              <div className="grid grid-cols-2 gap-3">
+                 <div className="p-3 bg-muted/30 rounded-xl border border-border/50">
+                    <p className="text-sm font-black">{stats.bids}</p>
+                    <p className="text-[9px] text-muted-foreground font-bold uppercase">Submissions</p>
+                 </div>
+                 <div className="p-3 bg-muted/30 rounded-xl border border-border/50">
+                    <p className="text-sm font-black">{stats.teams}</p>
+                    <p className="text-[9px] text-muted-foreground font-bold uppercase">Projects</p>
+                 </div>
+              </div>
+              <div className="p-3 bg-primary/5 rounded-xl border border-primary/10 flex items-center justify-between">
+                 <div>
+                    <p className="text-[10px] text-primary/70 font-bold uppercase">Rating</p>
+                    <p className="text-sm font-black">{stats.avgRating.toFixed(1)} <Star className="w-3 h-3 inline fill-primary text-primary ml-0.5 mb-1" /></p>
+                 </div>
+                 < Trophy className="w-6 h-6 text-primary/20" />
+              </div>
+           </Card>
         </div>
-      )}
 
-      {/* Edit Form */}
-      <Card className="shadow-card">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">
-            {editing ? 'Edit Information' : 'About'}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {editing ? (
-            <>
-              <div className="space-y-2">
-                <Label htmlFor="profile-name-field">Name *</Label>
-                <Input
-                  id="profile-name-field"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Your full name"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="profile-bio">Bio</Label>
-                <Textarea
-                  id="profile-bio"
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  rows={4}
-                  placeholder="Tell others about yourself, your skills, and what you're looking for..."
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="profile-github" className="flex items-center gap-1.5">
-                  <Github className="w-3.5 h-3.5" />GitHub URL
-                </Label>
-                <Input
-                  id="profile-github"
-                  value={github}
-                  onChange={(e) => setGithub(e.target.value)}
-                  placeholder="https://github.com/yourusername"
-                />
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  id="save-profile-btn"
-                  onClick={save}
-                  disabled={saving || !name.trim()}
-                  className="gradient-primary text-primary-foreground"
-                >
-                  <Check className="w-3.5 h-3.5 mr-1.5" />
-                  {saving ? 'Saving...' : 'Save Changes'}
-                </Button>
-                <Button variant="outline" onClick={cancel} disabled={saving}>
-                  <X className="w-3.5 h-3.5 mr-1.5" />Cancel
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="space-y-4">
-              {profile?.bio ? (
-                <p className="text-sm text-muted-foreground leading-relaxed">{profile.bio}</p>
-              ) : (
-                <p className="text-sm text-muted-foreground italic">No bio added yet. Click Edit to add one.</p>
-              )}
-              {profile?.github_url && (
-                <a
-                  href={profile.github_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-primary hover:underline"
-                >
-                  <Github className="w-4 h-4" />
-                  {profile.github_url.replace('https://github.com/', '@')}
-                </a>
-              )}
-              <div className="pt-2 border-t border-border">
-                <p className="text-xs text-muted-foreground">
-                  Member since {new Date((profile as any)?.created_at || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long' })}
-                </p>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        {/* Right Column: Bio & Portfolio */}
+        <div className="md:col-span-2 space-y-6">
+           {editing ? (
+             <Card className="shadow-elevated border-none bg-card p-6 space-y-6">
+                <div className="space-y-4">
+                   <div className="space-y-2"><Label className="text-xs font-bold uppercase text-muted-foreground">Full Professional Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} className="h-11 bg-background/50 font-bold" /></div>
+                   <div className="space-y-2"><Label className="text-xs font-bold uppercase text-muted-foreground">Github ID (Username Only)</Label><Input value={github} onChange={(e) => setGithub(e.target.value)} placeholder="tech-pro" className="h-11 bg-background/50" /></div>
+                   <div className="space-y-2"><Label className="text-xs font-bold uppercase text-muted-foreground">Professional Summary</Label><Textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={6} placeholder="Specialize in..." className="bg-background/50 resize-none leading-relaxed" /></div>
+                   <Button onClick={save} disabled={saving} className="w-full h-11 gradient-primary text-primary-foreground font-black text-base shadow-lg shadow-primary/20">
+                      {saving ? 'Engine Synchronizing...' : 'Submit Profile Audit'}
+                   </Button>
+                </div>
+             </Card>
+           ) : (
+             <>
+               <Card className="shadow-card border-none bg-card p-8">
+                  <h3 className="text-sm font-bold text-foreground flex items-center gap-2 mb-4 uppercase tracking-widest"><Check className="w-4 h-4 text-emerald-400" /> Professional Summary</h3>
+                  <p className="text-base text-muted-foreground leading-relaxed italic whitespace-pre-wrap">"{bio || 'No professional bio provided. Introduce yourself to companies by clicking Edit and sharing your experience.'}"</p>
+                  <div className="flex flex-wrap gap-2 mt-8">
+                     {['React', 'TypeScript', 'Node.js', 'PostgreSQL', 'Cloud Infrastructure'].map(s => <Badge key={s} variant="secondary" className="px-3 py-1 text-[10px] font-bold uppercase tracking-widest border border-white/5 shadow-sm bg-muted/30">{s}</Badge>)}
+                  </div>
+               </Card>
+
+               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Card className="shadow-card border-none bg-card p-5 hover:bg-muted/10 transition-colors cursor-pointer border border-transparent hover:border-primary/10">
+                     <Github className="w-6 h-6 text-foreground mb-4" />
+                     <h4 className="text-sm font-bold">Code Portfolio</h4>
+                     <p className="text-xs text-muted-foreground mt-1 truncate">{github || 'Not linked'}</p>
+                     <ExternalLink className="w-3 h-3 text-primary ml-auto mt-2" />
+                  </Card>
+                  <Card className="shadow-card border-none bg-card p-5 hover:bg-muted/10 transition-colors cursor-pointer border border-transparent hover:border-primary/10">
+                     <Globe className="w-6 h-6 text-foreground mb-4" />
+                     <h4 className="text-sm font-bold">Personal Brand</h4>
+                     <p className="text-xs text-muted-foreground mt-1 truncate">techintern.me/talent/{profile?.id.slice(0, 8)}</p>
+                     <ExternalLink className="w-3 h-3 text-primary ml-auto mt-2" />
+                  </Card>
+               </div>
+             </>
+           )}
+        </div>
+      </div>
     </div>
   );
 }

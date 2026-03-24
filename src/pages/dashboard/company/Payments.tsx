@@ -1,184 +1,131 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { DollarSign, ArrowUpRight, CheckCircle, Lock, Unlock, TrendingUp, RefreshCw } from 'lucide-react';
+import { DollarSign, Building, Wallet, ArrowUpRight, ArrowDownLeft, Clock, CheckCircle2, AlertCircle, ShoppingCart } from 'lucide-react';
 import { useRealtime } from '@/hooks/useRealtime';
-import { sendNotification } from '@/lib/notifications';
 import { formatDistanceToNow } from 'date-fns';
-
-const statusConfig: Record<string, { label: string; color: string; icon: any }> = {
-  escrow: { label: 'In Escrow', color: 'bg-amber-500/15 text-amber-400 border-amber-500/20', icon: Lock },
-  released: { label: 'Released', color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20', icon: Unlock },
-  refunded: { label: 'Refunded', color: 'bg-slate-500/15 text-slate-400 border-slate-500/20', icon: RefreshCw },
-};
 
 export default function CompanyPayments() {
   const { profile } = useAuth();
   const [payments, setPayments] = useState<any[]>([]);
-  const [releasing, setReleasing] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const fetchPayments = useCallback(async () => {
     if (!profile) return;
-    let query = supabase
+    const { data } = await supabase
       .from('payments')
-      .select('*, projects(title, company_id, company:profiles!projects_company_id_fkey(name))')
+      .select('*, projects(title, recipient:profiles!projects_company_id_fkey(name))')
+      .eq('payer_id', profile.id)
       .order('created_at', { ascending: false });
-
-    // For companies, filter to their own projects
-    if (profile.role === 'company') {
-      const { data: myProjects } = await supabase.from('projects').select('id').eq('company_id', profile.id);
-      const ids = myProjects?.map((p) => p.id) || [];
-      if (ids.length === 0) { setPayments([]); return; }
-      query = query.in('project_id', ids);
-    } else if (profile.role === 'student') {
-      // Show payments for projects where this student is leader
-      const { data: leaderTeams } = await supabase.from('teams').select('project_id').eq('leader_id', profile.id);
-      const ids = leaderTeams?.map((t) => t.project_id) || [];
-      if (ids.length === 0) { setPayments([]); return; }
-      query = query.in('project_id', ids);
-    }
-
-    const { data } = await query;
     if (data) setPayments(data);
+    setLoading(false);
   }, [profile]);
 
   useEffect(() => { fetchPayments(); }, [fetchPayments]);
+  useRealtime([{ table: 'payments', onData: fetchPayments }], [profile?.id]);
 
-  useRealtime([
-    { table: 'payments', onData: () => fetchPayments() },
-  ], [profile?.id]);
-
-  const releasePayment = async (payment: any) => {
-    setReleasing(payment.id);
-    const { error } = await supabase.from('payments').update({
-      status: 'released',
-      released_at: new Date().toISOString(),
-    }).eq('id', payment.id);
-
-    if (error) {
-      toast.error(error.message);
-    } else {
-      // Notify team leader
-      const { data: team } = await supabase
-        .from('teams')
-        .select('leader_id')
-        .eq('project_id', payment.project_id)
-        .single();
-      if (team) {
-        await sendNotification(
-          team.leader_id,
-          '💰 Payment Released!',
-          `$${Number(payment.amount).toLocaleString()} for "${payment.projects?.title}" has been released. Congratulations!`,
-          'success'
-        );
-      }
-      // Mark project as completed
-      await supabase.from('projects').update({ status: 'completed' }).eq('id', payment.project_id);
-      toast.success('Payment released and project marked complete!');
-      fetchPayments();
-    }
-    setReleasing(null);
+  const stats = {
+    totalSpent: payments.filter((p) => p.status === 'released').reduce((a, b) => a + Number(b.amount), 0),
+    lockedEscrow: payments.filter((p) => p.status === 'escrow').reduce((a, b) => a + Number(b.amount), 0),
+    activeProjects: projectsCount(payments),
   };
 
-  const totalEscrow = payments.filter((p) => p.status === 'escrow').reduce((a, p) => a + Number(p.amount), 0);
-  const totalReleased = payments.filter((p) => p.status === 'released').reduce((a, p) => a + Number(p.amount), 0);
+  function projectsCount(p: any[]) {
+    const ids = new Set(p.map(item => item.project_id));
+    return ids.size;
+  }
+
+  const statusConfig: Record<string, { color: string; icon: any }> = {
+    released: { color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20', icon: CheckCircle2 },
+    escrow: { color: 'bg-amber-500/15 text-amber-400 border-amber-500/20', icon: Clock },
+    pending: { color: 'bg-blue-500/15 text-blue-400 border-blue-500/20', icon: AlertCircle },
+    failed: { color: 'bg-red-500/15 text-red-400 border-red-500/20', icon: AlertCircle },
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">
-          {profile?.role === 'student' ? 'Earnings' : 'Payments'}
-        </h1>
-        <p className="text-sm text-muted-foreground mt-0.5">{payments.length} transaction{payments.length !== 1 ? 's' : ''}</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Escrow & Financials</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Oversee project funding and milestone releases</p>
+        </div>
+        <Button className="gradient-primary text-primary-foreground font-semibold h-10 shadow-lg px-6">
+          <DollarSign className="w-4 h-4 mr-2" /> Add Funding
+        </Button>
       </div>
 
-      {/* Summary Cards */}
-      {payments.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-amber-500/15 flex items-center justify-center">
-                <Lock className="w-5 h-5 text-amber-400" />
-              </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {[
+          { label: 'Total Investment', value: stats.totalSpent, icon: ShoppingCart, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+          { label: 'Funds in Escrow', value: stats.lockedEscrow, icon: Clock, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+          { label: 'Financed Projects', value: stats.activeProjects, icon: Building, color: 'text-blue-400', bg: 'bg-blue-500/10' },
+        ].map((s) => (
+          <Card key={s.label} className="shadow-card border-none bg-card hover:bg-muted/5 transition-colors overflow-hidden">
+            <CardContent className="p-5 flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">In Escrow</p>
-                <p className="text-xl font-bold text-foreground">${totalEscrow.toLocaleString()}</p>
+                <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{s.label}</p>
+                <p className="text-2xl font-bold text-foreground">{typeof s.value === 'number' && s.label.includes('Investment') || s.label.includes('Escrow') ? `$${s.value.toLocaleString()}` : s.value}</p>
               </div>
-            </div>
-          </div>
-          <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
-                <TrendingUp className="w-5 h-5 text-emerald-400" />
+              <div className={`p-3 rounded-2xl ${s.bg} border border-white/5`}>
+                <s.icon className={`w-6 h-6 ${s.color}`} />
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground">{profile?.role === 'student' ? 'Total Earned' : 'Total Released'}</p>
-                <p className="text-xl font-bold text-foreground">${totalReleased.toLocaleString()}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
-      {payments.length === 0 ? (
-        <div className="flex flex-col items-center py-16 text-center">
-          <DollarSign className="w-10 h-10 text-muted-foreground/40 mb-3" />
-          <p className="text-muted-foreground font-medium">No payments yet</p>
-          <p className="text-muted-foreground/60 text-sm mt-1">
-            {profile?.role === 'student' ? 'Win a project bid to get started' : 'Accept a bid to create an escrow payment'}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {payments.map((p) => {
-            const { color, icon: Icon } = statusConfig[p.status] || statusConfig.escrow;
-            return (
-              <Card key={p.id} className="shadow-card hover:shadow-elevated transition-all">
-                <CardContent className="p-4 flex items-center gap-4">
-                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center border ${color} shrink-0`}>
-                    <Icon className="w-5 h-5" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-foreground truncate">{p.projects?.title}</p>
-                    <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-                      <span className="font-bold text-base text-foreground">${Number(p.amount).toLocaleString()}</span>
-                      <span>•</span>
-                      <span>{formatDistanceToNow(new Date(p.created_at), { addSuffix: true })}</span>
-                      {p.released_at && (
-                        <>
-                          <span>•</span>
-                          <span>Released {formatDistanceToNow(new Date(p.released_at), { addSuffix: true })}</span>
-                        </>
-                      )}
+      <Card className="shadow-card border-border bg-card">
+        <CardHeader className="pb-4 border-b border-border bg-muted/10">
+          <CardTitle className="text-base flex items-center gap-2 font-bold tracking-tight">
+            <DollarSign className="w-5 h-5 text-primary" /> Expenditure History
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="p-12 space-y-4">
+              {[...Array(3)].map((_, i) => <div key={i} className="h-14 rounded-xl bg-muted/30 animate-pulse" />)}
+            </div>
+          ) : payments.length === 0 ? (
+            <div className="p-20 text-center flex flex-col items-center">
+              <Clock className="w-12 h-12 text-muted-foreground/20 mb-4" />
+              <p className="font-semibold text-muted-foreground">No financial activity recorded</p>
+              <p className="text-xs text-muted-foreground/60 mt-1 max-w-xs">Once you fund a project and release milestone payments, they will show up here.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {payments.map((p) => {
+                const { color, icon: Icon } = statusConfig[p.status] || statusConfig.pending;
+                return (
+                  <div key={p.id} className="p-5 flex items-center gap-4 hover:bg-muted/10 transition-colors">
+                    <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border border-white/5 shadow-sm ${color}`}>
+                      <Icon className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="text-sm font-semibold text-foreground truncate">{p.projects?.title || 'System Charge'}</p>
+                        <Badge variant="secondary" className={`text-[9px] py-0 font-bold border ${color}`}>{p.status}</Badge>
+                      </div>
+                      <div className="flex items-center gap-4 text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+                        <span className="flex items-center gap-1 font-semibold text-foreground/80">Recipient ID: {p.recipient_id?.slice(0, 8)}...</span>
+                        <span>•</span>
+                        <span>Milestone Release</span>
+                      </div>
+                    </div>
+                    <div className="text-right flex flex-col items-end shrink-0">
+                      <p className="text-sm font-bold text-foreground">-${Number(p.amount).toLocaleString()}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{formatDistanceToNow(new Date(p.created_at), { addSuffix: true })}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {(profile?.role === 'company' || profile?.role === 'admin') && p.status === 'escrow' && (
-                      <Button
-                        size="sm"
-                        id={`release-payment-${p.id}`}
-                        onClick={() => releasePayment(p)}
-                        disabled={releasing === p.id}
-                        className="gradient-primary text-primary-foreground"
-                      >
-                        <ArrowUpRight className="w-3.5 h-3.5 mr-1" />
-                        {releasing === p.id ? 'Releasing...' : 'Release'}
-                      </Button>
-                    )}
-                    <Badge variant="secondary" className={`text-[10px] border ${color}`}>
-                      {statusConfig[p.status]?.label || p.status}
-                    </Badge>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

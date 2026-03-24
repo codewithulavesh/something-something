@@ -1,27 +1,26 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { CheckCircle, XCircle, ChevronDown, ChevronUp, Users, DollarSign, Clock } from 'lucide-react';
+import { CheckCircle, XCircle, ChevronDown, ChevronUp, Users, DollarSign, Clock, Star, ShieldCheck, Mail, ArrowRight } from 'lucide-react';
 import { useRealtime } from '@/hooks/useRealtime';
 import { sendNotification } from '@/lib/notifications';
 import { formatDistanceToNow } from 'date-fns';
 
 const bidStatusColor: Record<string, string> = {
-  pending: 'bg-amber-500/15 text-amber-400 border border-amber-500/20',
-  accepted: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20',
-  rejected: 'bg-red-500/15 text-red-400 border border-red-500/20',
+  pending: 'bg-amber-500/15 text-amber-500 border-amber-500/20',
+  accepted: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/20',
+  rejected: 'bg-zinc-500/15 text-zinc-500 border-zinc-500/20',
 };
 
 const projectStatusColor: Record<string, string> = {
-  open: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20',
-  assigned: 'bg-blue-500/15 text-blue-400 border border-blue-500/20',
-  in_progress: 'bg-amber-500/15 text-amber-400 border border-amber-500/20',
-  completed: 'bg-purple-500/15 text-purple-400 border border-purple-500/20',
-  cancelled: 'bg-red-500/15 text-red-400 border border-red-500/20',
+  open: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/20',
+  assigned: 'bg-blue-500/15 text-blue-500 border-blue-500/20',
+  in_progress: 'bg-amber-500/15 text-amber-500 border-amber-500/20',
+  completed: 'bg-purple-500/15 text-purple-500 border-purple-500/20',
 };
 
 export default function ViewBids() {
@@ -34,223 +33,139 @@ export default function ViewBids() {
 
   const fetchAll = useCallback(async () => {
     if (!profile) return;
-    const { data: projs } = await supabase
-      .from('projects')
-      .select('*')
-      .eq('company_id', profile.id)
-      .order('created_at', { ascending: false });
-
+    const { data: projs } = await supabase.from('projects').select('*').eq('company_id', profile.id).order('created_at', { ascending: false });
     if (projs) {
       setProjects(projs);
-      // Expand open projects by default
-      setExpanded(new Set(projs.filter((p) => p.status === 'open').map((p) => p.id)));
       const bidsByProject: Record<string, any[]> = {};
-      await Promise.all(
-        projs.map(async (p) => {
-          const { data } = await supabase
-            .from('bids')
-            .select('*, profiles!bids_student_id_fkey(name, skill_score, avatar_url, bio)')
-            .eq('project_id', p.id)
-            .order('bid_amount', { ascending: true });
-          if (data) bidsByProject[p.id] = data;
-        })
-      );
+      await Promise.all(projs.map(async (p) => {
+        const { data } = await supabase.from('bids').select('*, profiles!bids_student_id_fkey(*)').eq('project_id', p.id).order('bid_amount', { ascending: true });
+        if (data) bidsByProject[p.id] = data;
+      }));
       setBids(bidsByProject);
     }
     setLoading(false);
   }, [profile]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
-
-  useRealtime([
-    { table: 'bids', event: 'INSERT', onData: () => fetchAll() },
-    { table: 'bids', event: 'UPDATE', onData: () => fetchAll() },
-    { table: 'projects', event: 'UPDATE', onData: () => fetchAll() },
-  ], [profile?.id]);
+  useRealtime([{ table: 'bids', onData: fetchAll }, { table: 'projects', onData: fetchAll }], [profile?.id]);
 
   const acceptBid = async (bid: any, projectId: string) => {
     setAccepting(bid.id);
     try {
-      // Accept this bid, reject others
       await Promise.all([
         supabase.from('bids').update({ status: 'accepted' }).eq('id', bid.id),
         supabase.from('bids').update({ status: 'rejected' }).eq('project_id', projectId).neq('id', bid.id),
         supabase.from('projects').update({ status: 'assigned' }).eq('id', projectId),
+        supabase.from('teams').insert({ project_id: projectId, leader_id: bid.student_id }),
+        supabase.from('payments').insert({ project_id: projectId, amount: bid.bid_amount, status: 'escrow', payer_id: profile?.id, recipient_id: bid.student_id }),
+        sendNotification(bid.student_id, '🎉 Bid Accepted!', `Your bid on "${projects.find(p => p.id === projectId)?.title}" has been accepted!`, 'success')
       ]);
-
-      // Create team with student as leader
-      await supabase.from('teams').insert({
-        project_id: projectId,
-        leader_id: bid.student_id,
-      });
-
-      // Escrow payment
-      await supabase.from('payments').insert({
-        project_id: projectId,
-        amount: bid.bid_amount,
-        status: 'escrow',
-      });
-
-      // Notify the student who won
-      const project = projects.find((p) => p.id === projectId);
-      await sendNotification(
-        bid.student_id,
-        '🎉 Bid Accepted!',
-        `Your bid of $${Number(bid.bid_amount).toLocaleString()} on "${project?.title}" has been accepted! You are now the project leader.`,
-        'success'
-      );
-
-      // Notify rejected students
-      const rejectedBids = (bids[projectId] || []).filter((b) => b.id !== bid.id);
-      await Promise.all(
-        rejectedBids.map((rb) =>
-          sendNotification(
-            rb.student_id,
-            'Bid Update',
-            `Your bid on "${project?.title}" was not selected this time. Keep bidding!`,
-            'info'
-          )
-        )
-      );
-
-      toast.success('Bid accepted! Student is now the project leader.');
+      toast.success('Bid accepted! Project is now assigned.');
       fetchAll();
-    } catch (err: any) {
-      toast.error(err.message || 'Something went wrong');
-    }
+    } catch (err: any) { toast.error(err.message); }
     setAccepting(null);
   };
 
   const toggleExpand = (id: string) => {
-    setExpanded((prev) => {
+    setExpanded(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
 
-  if (loading) {
-    return (
-      <div className="space-y-6 animate-fade-in">
-        <h1 className="text-2xl font-bold text-foreground">View & Select Bids</h1>
-        <div className="space-y-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-24 rounded-xl bg-muted/30 animate-pulse" />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">View & Select Bids</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">{projects.length} project{projects.length !== 1 ? 's' : ''}</p>
+    <div className="space-y-8 animate-fade-in max-w-5xl">
+      <div className="flex flex-col gap-2">
+        <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Proposals & Bids</h1>
+        <p className="text-sm text-muted-foreground">Select the most qualified talent for your active projects</p>
       </div>
 
       {projects.length === 0 ? (
-        <div className="flex flex-col items-center py-16 text-center">
-          <Users className="w-10 h-10 text-muted-foreground/40 mb-3" />
-          <p className="text-muted-foreground font-medium">No projects posted yet</p>
-          <p className="text-muted-foreground/60 text-sm mt-1">Post a project to start receiving bids</p>
-        </div>
+        <Card className="py-20 text-center border-dashed border-2">
+          <Users className="w-12 h-12 text-muted-foreground/20 mx-auto mb-4" />
+          <h3 className="font-bold text-lg">No Listings Found</h3>
+          <p className="text-sm text-muted-foreground mt-1">Post your first project to receive high-quality student bids.</p>
+        </Card>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-6">
           {projects.map((p) => {
             const projectBids = bids[p.id] || [];
-            const pendingCount = projectBids.filter((b) => b.status === 'pending').length;
             const isExpanded = expanded.has(p.id);
+            const pending = projectBids.filter(b => b.status === 'pending').length;
 
             return (
-              <Card key={p.id} className="shadow-card overflow-hidden">
-                {/* Project Header */}
-                <button
-                  className="w-full text-left"
-                  onClick={() => toggleExpand(p.id)}
-                >
-                  <div className="flex items-center justify-between p-4 hover:bg-muted/20 transition-colors">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-semibold text-foreground text-sm">{p.title}</h3>
-                          <Badge variant="secondary" className={`text-[10px] border ${projectStatusColor[p.status] || ''}`}>
-                            {p.status.replace('_', ' ')}
-                          </Badge>
-                          {pendingCount > 0 && (
-                            <Badge variant="secondary" className="bg-primary/10 text-primary border border-primary/20 text-[10px]">
-                              {pendingCount} pending
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1"><DollarSign className="w-3 h-3" />${Number(p.budget).toLocaleString()} budget</span>
-                          <span className="flex items-center gap-1"><Users className="w-3 h-3" />{projectBids.length} bid{projectBids.length !== 1 ? 's' : ''}</span>
-                          <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDistanceToNow(new Date(p.created_at), { addSuffix: true })}</span>
-                        </div>
+              <Card key={p.id} className={`overflow-hidden border-none shadow-elevated transition-all ${isExpanded ? 'ring-2 ring-primary/20' : ''}`}>
+                <div className="bg-card w-full text-left" onClick={() => toggleExpand(p.id)}>
+                   <div className="flex items-center justify-between p-6 cursor-pointer hover:bg-muted/10 transition-colors">
+                      <div className="flex-1 min-w-0">
+                         <div className="flex items-center gap-3 mb-2">
+                            <h3 className="text-lg font-bold text-foreground truncate">{p.title}</h3>
+                            <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-wider ${projectStatusColor[p.status]}`}>{p.status.replace('_', ' ')}</Badge>
+                         </div>
+                         <div className="flex items-center gap-6 text-[10px] font-bold text-muted-foreground uppercase tracking-[0.15em]">
+                            <span className="flex items-center gap-1.5"><DollarSign className="w-3.5 h-3.5" /> ${Number(p.budget).toLocaleString()}</span>
+                            <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> {projectBids.length} Applicants</span>
+                            {pending > 0 && <span className="text-amber-500 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> {pending} New Bids</span>}
+                         </div>
                       </div>
-                    </div>
-                    {isExpanded ? (
-                      <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
-                    )}
-                  </div>
-                </button>
+                      <Button variant="ghost" size="icon" className="shrink-0">{isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}</Button>
+                   </div>
+                </div>
 
-                {/* Bids List */}
                 {isExpanded && (
-                  <div className="border-t border-border">
-                    {!projectBids.length ? (
-                      <p className="text-sm text-muted-foreground p-4 text-center">No bids yet</p>
+                  <div className="border-t border-border bg-muted/5">
+                    {projectBids.length === 0 ? (
+                      <div className="p-12 text-center text-xs text-muted-foreground italic tracking-widest uppercase">Awaiting initial proposals...</div>
                     ) : (
-                      <div className="divide-y divide-border">
+                      <div className="divide-y divide-border/50 p-4 space-y-4">
                         {projectBids.map((b) => (
-                          <div key={b.id} className={`p-4 flex flex-col sm:flex-row sm:items-start gap-4 ${b.status === 'accepted' ? 'bg-emerald-500/5' : ''}`}>
-                            {/* Avatar */}
-                            <div className="flex items-start gap-3 flex-1 min-w-0">
-                              <div className="w-10 h-10 rounded-full gradient-primary flex items-center justify-center text-primary-foreground text-sm font-bold shrink-0">
-                                {b.profiles?.name?.charAt(0)?.toUpperCase() || '?'}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <p className="text-sm font-semibold text-foreground">{b.profiles?.name}</p>
-                                  <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                                    Score: {b.profiles?.skill_score ?? '—'}
-                                  </span>
-                                  <Badge variant="secondary" className={`text-[10px] border ${bidStatusColor[b.status] || ''}`}>
-                                    {b.status}
-                                  </Badge>
-                                </div>
-                                <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                                  <span className="flex items-center gap-1 font-medium text-foreground">
-                                    <DollarSign className="w-3 h-3 text-primary" />${Number(b.bid_amount).toLocaleString()}
-                                  </span>
-                                  {b.timeline && <span>⏱ {b.timeline}</span>}
-                                  <span>{formatDistanceToNow(new Date(b.created_at), { addSuffix: true })}</span>
-                                </div>
-                                {b.proposal && (
-                                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed line-clamp-3">{b.proposal}</p>
-                                )}
-                              </div>
-                            </div>
+                          <div key={b.id} className={`group relative p-6 rounded-2xl border transition-all ${b.status === 'accepted' ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-card border-border hover:border-primary/30 shadow-sm'}`}>
+                            <div className="flex flex-col md:flex-row gap-6">
+                               {/* Applicant Info */}
+                               <div className="md:w-64 space-y-4 shrink-0">
+                                  <div className="flex items-center gap-3">
+                                     <div className="w-12 h-12 rounded-2xl gradient-primary flex items-center justify-center text-primary-foreground text-lg font-black shadow-lg">
+                                        {b.profiles?.name?.charAt(0).toUpperCase()}
+                                     </div>
+                                     <div>
+                                        <p className="font-bold text-foreground flex items-center gap-1.5">{b.profiles?.name} {b.profiles?.skill_score > 80 && <ShieldCheck className="w-3.5 h-3.5 text-blue-500" />}</p>
+                                        <p className="text-[10px] text-muted-foreground font-bold tracking-widest uppercase">Score: {b.profiles?.skill_score || 0}</p>
+                                     </div>
+                                  </div>
+                                  <div className="space-y-2">
+                                     <div className="flex items-center justify-between p-2 rounded-lg bg-muted/40 text-[11px] font-medium text-muted-foreground uppercase">
+                                        <span>Candidate Bid</span>
+                                        <span className="text-foreground font-bold">${Number(b.bid_amount).toLocaleString()}</span>
+                                     </div>
+                                     <div className="flex items-center justify-between p-2 rounded-lg bg-muted/40 text-[11px] font-medium text-muted-foreground uppercase">
+                                        <span>Timeline</span>
+                                        <span className="text-foreground font-bold">{b.timeline || 'Flexible'}</span>
+                                     </div>
+                                  </div>
+                               </div>
 
-                            {/* Actions */}
-                            {b.status === 'pending' && p.status === 'open' && (
-                              <div className="flex items-center gap-2 shrink-0">
-                                <Button
-                                  size="sm"
-                                  id={`accept-bid-${b.id}`}
-                                  onClick={() => acceptBid(b, p.id)}
-                                  disabled={accepting === b.id}
-                                  className="gradient-primary text-primary-foreground"
-                                >
-                                  <CheckCircle className="w-3.5 h-3.5 mr-1" />
-                                  {accepting === b.id ? 'Accepting...' : 'Accept'}
-                                </Button>
-                              </div>
-                            )}
+                               {/* Proposal Content */}
+                               <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between mb-3">
+                                     <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-widest ${bidStatusColor[b.status]}`}>{b.status}</Badge>
+                                     <span className="text-[10px] text-muted-foreground font-medium">{formatDistanceToNow(new Date(b.created_at), { addSuffix: true })}</span>
+                                  </div>
+                                  <p className="text-sm text-muted-foreground leading-relaxed italic mb-4">"{b.proposal || 'No additional details provided.'}"</p>
+                                  <div className="flex items-center gap-3">
+                                     {b.status === 'pending' && p.status === 'open' && (
+                                       <Button size="sm" className="gradient-primary text-primary-foreground font-bold h-9 px-6 shadow-lg shadow-primary/20" onClick={() => acceptBid(b, p.id)} disabled={!!accepting}>
+                                          {accepting === b.id ? 'Formalizing...' : 'Accept Proposal'} <ArrowRight className="w-4 h-4 ml-1.5" />
+                                       </Button>
+                                     )}
+                                     {b.status === 'accepted' && (
+                                       <div className="flex items-center gap-2 text-emerald-500 font-bold text-xs uppercase tracking-widest">
+                                          <CheckCircle className="w-4 h-4" /> Selected Partner
+                                       </div>
+                                     )}
+                                  </div>
+                               </div>
+                            </div>
                           </div>
                         ))}
                       </div>

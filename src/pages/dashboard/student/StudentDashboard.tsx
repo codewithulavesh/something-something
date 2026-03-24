@@ -5,11 +5,13 @@ import StatCard from '@/components/StatCard';
 import {
   FolderOpen, FileText, DollarSign, Users, Trophy,
   BarChart3, TrendingUp, Clock, Activity, Zap, CheckCircle2, AlertCircle,
+  Briefcase, ArrowRight, MessageSquare, Star
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useRealtime } from '@/hooks/useRealtime';
 import { formatDistanceToNow } from 'date-fns';
+import { Link } from 'react-router-dom';
 
 const statusColor: Record<string, string> = {
   open: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
@@ -19,246 +21,166 @@ const statusColor: Record<string, string> = {
   cancelled: 'bg-red-500/15 text-red-400 border-red-500/20',
 };
 
-const statusIcon: Record<string, React.FC<any>> = {
-  open: Zap,
-  assigned: Users,
-  in_progress: Activity,
-  completed: CheckCircle2,
-  cancelled: AlertCircle,
-};
-
 export default function StudentDashboard() {
   const { profile } = useAuth();
-  const [stats, setStats] = useState({ projects: 0, bids: 0, earnings: 0, teams: 0, completed: 0 });
-  const [recentProjects, setRecentProjects] = useState<any[]>([]);
-  const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [stats, setStats] = useState({ bids: 0, teams: 0, earnings: 0, reputation: 0 });
+  const [recommendedProjects, setRecommendedProjects] = useState<any[]>([]);
+  const [activity, setActivity] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchStats = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     if (!profile) return;
-    if (profile.role === 'student') {
-      const [{ count: bids }, { count: teams }, { count: accepted }] = await Promise.all([
-        supabase.from('bids').select('*', { count: 'exact', head: true }).eq('student_id', profile.id),
-        supabase.from('team_members').select('*', { count: 'exact', head: true }).eq('user_id', profile.id),
-        supabase.from('bids').select('*', { count: 'exact', head: true }).eq('student_id', profile.id).eq('status', 'accepted'),
-      ]);
-      // Get earnings from released payments for projects where this student is leader
-      const { data: leaderTeams } = await supabase.from('teams').select('project_id').eq('leader_id', profile.id);
-      const projectIds = leaderTeams?.map((t) => t.project_id) || [];
-      let earnings = 0;
-      if (projectIds.length > 0) {
-        const { data: pays } = await supabase.from('payments').select('amount').eq('status', 'released').in('project_id', projectIds);
-        earnings = pays?.reduce((a, p) => a + Number(p.amount), 0) || 0;
-      }
-      setStats({ projects: 0, bids: bids || 0, earnings, teams: teams || 0, completed: accepted || 0 });
-    } else if (profile.role === 'company') {
-      const [{ count: projects }, { count: completed }, { data: payments }] = await Promise.all([
-        supabase.from('projects').select('*', { count: 'exact', head: true }).eq('company_id', profile.id),
-        supabase.from('projects').select('*', { count: 'exact', head: true }).eq('company_id', profile.id).eq('status', 'completed'),
-        supabase.from('payments').select('amount, status, project_id').in('status', ['escrow', 'released']),
-      ]);
-      const total = payments?.reduce((acc, p) => acc + Number(p.amount), 0) || 0;
-      setStats({ projects: projects || 0, bids: 0, earnings: total, teams: 0, completed: completed || 0 });
-    } else {
-      const [{ count: users }, { count: projects }, { data: payments }, { count: completed }] = await Promise.all([
-        supabase.from('profiles').select('*', { count: 'exact', head: true }),
-        supabase.from('projects').select('*', { count: 'exact', head: true }),
-        supabase.from('payments').select('amount').eq('status', 'released'),
-        supabase.from('projects').select('*', { count: 'exact', head: true }).eq('status', 'completed'),
-      ]);
-      const revenue = payments?.reduce((a, p) => a + Number(p.amount), 0) || 0;
-      setStats({ projects: projects || 0, bids: 0, earnings: revenue, teams: users || 0, completed: completed || 0 });
-    }
-  }, [profile]);
+    
+    // 1. Stats
+    const [{ count: bids }, { count: teams }, { data: pays }, { data: reviews }] = await Promise.all([
+      supabase.from('bids').select('*', { count: 'exact', head: true }).eq('student_id', profile.id),
+      supabase.from('team_members').select('*', { count: 'exact', head: true }).eq('user_id', profile.id),
+      supabase.from('payments').select('amount').eq('recipient_id', profile.id).eq('status', 'released'),
+      supabase.from('reviews').select('rating').eq('reviewee_id', profile.id),
+    ]);
 
-  const fetchRecentProjects = useCallback(async () => {
-    const { data } = await supabase
-      .from('projects')
-      .select('*, profiles!projects_company_id_fkey(name, avatar_url)')
-      .order('created_at', { ascending: false })
-      .limit(6);
-    if (data) setRecentProjects(data);
-  }, []);
+    const earnings = pays?.reduce((a, b) => a + Number(b.amount), 0) || 0;
+    const avgRating = reviews?.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
 
-  const fetchActivity = useCallback(async () => {
-    if (!profile) return;
-    // Fetch recent bids as activity
-    const { data: bids } = await supabase
-      .from('bids')
-      .select('*, projects(title), profiles!bids_student_id_fkey(name)')
-      .order('created_at', { ascending: false })
-      .limit(5);
-    const { data: milestones } = await supabase
-      .from('milestones')
-      .select('*, projects(title)')
-      .order('created_at', { ascending: false })
-      .limit(5);
+    setStats({
+      bids: bids || 0,
+      teams: teams || 0,
+      earnings,
+      reputation: profile.skill_score || (avgRating * 20),
+    });
 
-    const activity = [
-      ...(bids || []).map((b: any) => ({
-        ...b, _type: 'bid', _time: b.created_at,
-        _label: `${b.profiles?.name} bid $${Number(b.bid_amount).toLocaleString()} on`,
-        _project: b.projects?.title,
-      })),
-      ...(milestones || []).map((m: any) => ({
-        ...m, _type: 'milestone', _time: m.created_at,
-        _label: `Milestone "${m.title}" created for`,
-        _project: m.projects?.title,
-      })),
-    ].sort((a, b) => new Date(b._time).getTime() - new Date(a._time).getTime()).slice(0, 7);
+    // 2. Recommended (Newest open projects)
+    const { data: projs } = await supabase.from('projects').select('*, profiles!projects_company_id_fkey(name)').eq('status', 'open').order('created_at', { ascending: false }).limit(4);
+    setRecommendedProjects(projs || []);
 
-    setRecentActivity(activity);
+    // 3. Activity (Recent bids and milestone updates)
+    const { data: recentBids } = await supabase.from('bids').select('*, projects(title)').eq('student_id', profile.id).order('created_at', { ascending: false }).limit(3);
+    setActivity(recentBids || []);
+    
     setLoading(false);
   }, [profile]);
 
-  useEffect(() => {
-    Promise.all([fetchStats(), fetchRecentProjects(), fetchActivity()]);
-  }, [fetchStats, fetchRecentProjects, fetchActivity]);
-
-  // Real-time: refresh stats & projects on any project/bid change
-  useRealtime([
-    { table: 'projects', onData: () => { fetchStats(); fetchRecentProjects(); fetchActivity(); } },
-    { table: 'bids', onData: () => { fetchStats(); fetchActivity(); } },
-    { table: 'payments', onData: () => fetchStats() },
-  ], [profile?.id]);
-
-  const studentCards = [
-    { title: 'My Bids', value: stats.bids, icon: FileText, variant: 'primary' as const, sub: 'Total submitted' },
-    { title: 'Won Projects', value: stats.completed, icon: Trophy, variant: 'accent' as const, sub: 'Bids accepted' },
-    { title: 'Skill Score', value: profile?.skill_score || 0, icon: TrendingUp, variant: 'warning' as const, sub: 'Reputation points' },
-    { title: 'Earnings', value: `$${stats.earnings.toLocaleString()}`, icon: DollarSign, variant: 'default' as const, sub: 'Released payments' },
-  ];
-
-  const companyCards = [
-    { title: 'Posted Projects', value: stats.projects, icon: FolderOpen, variant: 'primary' as const, sub: 'All time' },
-    { title: 'Completed', value: stats.completed, icon: CheckCircle2, variant: 'accent' as const, sub: 'Finished projects' },
-    { title: 'In Escrow/Paid', value: `$${stats.earnings.toLocaleString()}`, icon: DollarSign, variant: 'warning' as const, sub: 'Total spend' },
-    { title: 'Active Teams', value: stats.teams, icon: Users, variant: 'default' as const, sub: 'Running now' },
-  ];
-
-  const adminCards = [
-    { title: 'Total Users', value: stats.teams, icon: Users, variant: 'primary' as const, sub: 'Registered' },
-    { title: 'Total Projects', value: stats.projects, icon: FolderOpen, variant: 'accent' as const, sub: 'All time' },
-    { title: 'Revenue', value: `$${stats.earnings.toLocaleString()}`, icon: DollarSign, variant: 'warning' as const, sub: 'Released' },
-    { title: 'Completed', value: stats.completed, icon: BarChart3, variant: 'default' as const, sub: 'Finished projects' },
-  ];
-
-  const cards = profile?.role === 'student' ? studentCards : profile?.role === 'company' ? companyCards : adminCards;
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useRealtime([{ table: 'bids', onData: fetchAll }, { table: 'projects', onData: fetchAll }], [profile?.id]);
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">
-            Welcome back, <span className="text-primary">{profile?.name || 'User'}</span> 👋
-          </h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-          </p>
+    <div className="space-y-8 animate-fade-in pb-10">
+      {/* Hero Welcome */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-8 rounded-3xl bg-card border border-border shadow-elevated relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-12 opacity-[0.03] select-none pointer-events-none">
+           <Trophy className="w-48 h-48" />
         </div>
-        <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-success/10 border border-success/20">
-          <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-          <span className="text-xs text-success font-medium">Live</span>
+        <div className="relative z-10 flex items-center gap-6">
+           <div className="w-20 h-20 rounded-2xl gradient-primary flex items-center justify-center text-3xl font-black text-primary-foreground shadow-lg">
+             {profile?.name?.charAt(0).toUpperCase()}
+           </div>
+           <div>
+              <h1 className="text-2xl font-black text-foreground tracking-tight">System Ready, {profile?.name || 'Engineer'}.</h1>
+              <p className="text-sm text-muted-foreground font-medium mt-1 flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Status: Available for High-Impact Projects
+              </p>
+           </div>
+        </div>
+        <div className="flex items-center gap-3 relative z-10">
+           <Button className="h-11 px-6 gradient-primary text-primary-foreground font-bold shadow-lg" asChild>
+              <Link to="/dashboard/projects">Explore Opportunities</Link>
+           </Button>
         </div>
       </div>
 
-      {/* Stat Cards */}
+      {/* Modern Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {cards.map((card) => (
-          <StatCard key={card.title} {...card} />
+        {[
+          { label: 'Active Bids', value: stats.bids, icon: FileText, color: 'text-blue-400', bg: 'bg-blue-500/10' },
+          { label: 'Project Participation', value: stats.teams, icon: Users, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+          { label: 'Total Revenue', value: `$${stats.earnings.toLocaleString()}`, icon: DollarSign, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+          { label: 'Talent Score', value: stats.reputation, icon: Star, color: 'text-amber-400', bg: 'bg-amber-500/10' },
+        ].map((s) => (
+          <Card key={s.label} className="border-none shadow-card hover:translate-y-[-2px] transition-all">
+            <CardContent className="p-6 flex items-center justify-between">
+               <div>
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-1">{s.label}</p>
+                  <p className="text-2xl font-black text-foreground">{s.value}</p>
+               </div>
+               <div className={`p-3 rounded-xl ${s.bg} border border-white/5`}>
+                  <s.icon className={`w-5 h-5 ${s.color}`} />
+               </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Recent Projects */}
-        <Card className="shadow-card lg:col-span-3">
-          <CardHeader className="flex flex-row items-center justify-between pb-3">
-            <CardTitle className="text-base font-semibold">Recent Projects</CardTitle>
-            <span className="text-xs text-muted-foreground">{recentProjects.length} project{recentProjects.length !== 1 ? 's' : ''}</span>
-          </CardHeader>
-          <CardContent className="p-0">
-            {recentProjects.length === 0 ? (
-              <p className="text-muted-foreground text-sm p-4">No projects yet</p>
-            ) : (
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Recommended for you */}
+        <Card className="lg:col-span-8 shadow-card border-none bg-card overflow-hidden">
+           <CardHeader className="p-6 border-b border-border bg-muted/10 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm font-bold flex items-center gap-2 uppercase tracking-widest text-muted-foreground">
+                <Briefcase className="w-4 h-4 text-primary" /> Curated Opportunities
+              </CardTitle>
+              <Link to="/dashboard/projects" className="text-xs font-bold text-primary hover:underline flex items-center gap-1">View All <ArrowRight className="w-3 h-3" /></Link>
+           </CardHeader>
+           <CardContent className="p-0">
               <div className="divide-y divide-border">
-                {recentProjects.map((p) => {
-                  const Icon = statusIcon[p.status] || FolderOpen;
-                  return (
-                    <div key={p.id} className="flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors group">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/20 transition-colors">
-                          <Icon className="w-4 h-4 text-primary" />
+                {recommendedProjects.map(p => (
+                  <div key={p.id} className="p-6 flex items-center justify-between group hover:bg-muted/30 transition-colors">
+                     <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                           <h4 className="text-base font-bold text-foreground truncate">{p.title}</h4>
+                           <Badge variant="outline" className="text-[10px] py-0 px-2 h-5 text-emerald-500 border-emerald-500/20 bg-emerald-500/5 uppercase font-bold tracking-widest">New</Badge>
                         </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-foreground truncate">{p.title}</p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-xs text-muted-foreground">{p.profiles?.name || 'Unknown'}</span>
-                            <span className="text-xs text-muted-foreground">•</span>
-                            <span className="text-xs text-muted-foreground">${Number(p.budget).toLocaleString()}</span>
-                            <span className="text-xs text-muted-foreground">•</span>
-                            <Clock className="w-3 h-3 text-muted-foreground" />
-                            <span className="text-xs text-muted-foreground">
-                              {formatDistanceToNow(new Date(p.created_at), { addSuffix: true })}
-                            </span>
-                          </div>
+                        <div className="flex items-center gap-5 text-xs text-muted-foreground font-medium">
+                           <span>{p.profiles?.name}</span>
+                           <span>•</span>
+                           <span className="font-bold text-foreground">${Number(p.budget).toLocaleString()}</span>
+                           <span>•</span>
+                           <span>{formatDistanceToNow(new Date(p.created_at), { addSuffix: true })}</span>
                         </div>
-                      </div>
-                      <Badge variant="secondary" className={`text-[10px] border ${statusColor[p.status] || ''} shrink-0`}>
-                        {p.status.replace('_', ' ')}
-                      </Badge>
-                    </div>
-                  );
-                })}
+                     </div>
+                     <Button size="sm" variant="outline" className="h-9 px-4 font-bold rounded-xl border-white/10 group-hover:bg-primary group-hover:text-primary-foreground transition-all" asChild>
+                        <Link to="/dashboard/projects">Review Brief</Link>
+                     </Button>
+                  </div>
+                ))}
               </div>
-            )}
-          </CardContent>
+           </CardContent>
         </Card>
 
-        {/* Activity Feed */}
-        <Card className="shadow-card lg:col-span-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base font-semibold flex items-center gap-2">
-              <Activity className="w-4 h-4 text-primary" />
-              Live Activity
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {loading ? (
-              <div className="p-4 space-y-3">
-                {[...Array(4)].map((_, i) => (
-                  <div key={i} className="flex gap-3 animate-pulse">
-                    <div className="w-7 h-7 rounded-full bg-muted shrink-0" />
-                    <div className="flex-1 space-y-1.5">
-                      <div className="h-3 bg-muted rounded w-3/4" />
-                      <div className="h-2 bg-muted rounded w-1/2" />
-                    </div>
-                  </div>
-                ))}
+        {/* Recent Pipeline */}
+        <Card className="lg:col-span-4 shadow-card border-none bg-card overflow-hidden">
+           <CardHeader className="p-6 border-b border-border bg-muted/10">
+              <CardTitle className="text-sm font-bold flex items-center gap-2 uppercase tracking-widest text-muted-foreground">
+                 <Activity className="w-4 h-4 text-primary" /> Personal Pipeline
+              </CardTitle>
+           </CardHeader>
+           <CardContent className="p-6">
+              <div className="space-y-6">
+                 {activity.length === 0 ? (
+                    <div className="text-center py-10 opacity-20"><Activity className="w-12 h-12 mx-auto mb-2" /><p className="text-[10px] font-bold uppercase">No recent pulses</p></div>
+                 ) : (
+                    activity.map(a => (
+                      <div key={a.id} className="flex gap-4 group">
+                         <div className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${a.status === 'accepted' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                         <div className="flex-1 min-w-0 border-b border-border/50 pb-4 group-last:border-none">
+                            <p className="text-xs font-bold text-foreground truncate">{a.projects?.title}</p>
+                            <p className="text-[10px] text-muted-foreground mt-1 flex items-center justify-between">
+                               <span className="font-bold uppercase tracking-widest">Bid: ${Number(a.bid_amount).toLocaleString()}</span>
+                               <span>{formatDistanceToNow(new Date(a.created_at), { addSuffix: true })}</span>
+                            </p>
+                            <Badge className={`mt-2 text-[9px] py-0 border ${a.status === 'accepted' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-amber-500/10 text-amber-500 border-amber-500/20'}`}>
+                               Proposal {a.status}
+                            </Badge>
+                         </div>
+                      </div>
+                    ))
+                 )}
               </div>
-            ) : recentActivity.length === 0 ? (
-              <p className="text-sm text-muted-foreground p-4">No recent activity</p>
-            ) : (
-              <div className="divide-y divide-border">
-                {recentActivity.map((a, i) => (
-                  <div key={i} className="flex items-start gap-3 px-4 py-3">
-                    <div className={`w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold ${a._type === 'bid' ? 'bg-primary/10 text-primary' : 'bg-accent/10 text-accent'}`}>
-                      {a._type === 'bid' ? '$' : '⚑'}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs text-foreground">
-                        <span className="text-muted-foreground">{a._label}</span>{' '}
-                        <span className="font-medium truncate">{a._project}</span>
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {formatDistanceToNow(new Date(a._time), { addSuffix: true })}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+              <div className="mt-8 p-4 rounded-2xl bg-muted/30 border border-border">
+                 <p className="text-[10px] font-bold text-muted-foreground uppercase mb-2 tracking-widest flex items-center gap-2">
+                    <MessageSquare className="w-3.5 h-3.5" /> Career Path
+                 </p>
+                 <p className="text-xs font-medium text-foreground leading-relaxed italic">"Keep applying to projects that match your tech stack to level up your Talent Score."</p>
               </div>
-            )}
-          </CardContent>
+           </CardContent>
         </Card>
       </div>
     </div>
