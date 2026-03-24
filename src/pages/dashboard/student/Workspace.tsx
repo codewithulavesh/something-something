@@ -11,11 +11,21 @@ import { toast } from 'sonner';
 import { 
   FilePlus, Save, Folder, FileCode, Trash2, Terminal, Users, 
   Play, Download, History, Code2, Share2, ShieldCheck, Zap,
-  Activity, CloudRain, Clock
+  Activity, CloudRain, Clock, Sparkles, Cpu, Search, 
+  LayoutGrid, Settings, PanelsLeftBottom, X, ChevronRight,
+  Bug, Lock, Send, MessageSquare, Database
 } from 'lucide-react';
 import { useRealtime } from '@/hooks/useRealtime';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { 
+  ResizableHandle, 
+  ResizablePanel, 
+  ResizablePanelGroup 
+} from '@/components/ui/resizable';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
+import { formatDistanceToNow } from 'date-fns';
 
 interface WorkspaceFile {
   id: string;
@@ -34,24 +44,71 @@ interface TeamMember {
   avatar_url?: string;
 }
 
+interface ChatMessage {
+  id: string;
+  role: 'system' | 'ai' | 'user';
+  content: string;
+  timestamp: Date;
+}
+
 export default function StudentWorkspace() {
   const { profile } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState('');
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
-  const [activeFile, setActiveFile] = useState<WorkspaceFile | null>(null);
+  const [openFiles, setOpenFiles] = useState<WorkspaceFile[]>([]);
+  const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [newFileName, setNewFileName] = useState('');
   const [newFileLang, setNewFileLang] = useState('javascript');
   const [saving, setSaving] = useState(false);
-  const [terminalOutput, setTerminalOutput] = useState('System: Workspace initialized. High-availability cluster online.\n');
+  const [terminalOutput, setTerminalOutput] = useState('System: Collaborative Workspace initialized. Local Persistent Storage: ENABLED.\n');
   const [terminalInput, setTerminalInput] = useState('');
-  const [showTerminal, setShowTerminal] = useState(true);
   const [isAutoSync, setIsAutoSync] = useState(true);
-  
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isConsoleOpen, setIsConsoleOpen] = useState(true);
+
+  const activeFile = openFiles.find(f => f.id === activeFileId) || null;
   const lastSavedContent = useRef<string>('');
   const syncTimer = useRef<NodeJS.Timeout | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Persistence Keys
+  const getStorageKey = (projectId: string) => `workspace_state_${projectId}`;
+  const getDraftKey = (fileId: string) => `file_draft_${fileId}`;
+
+  // Hydrate Workspace State from Local Storage
+  useEffect(() => {
+    if (!selectedProject) return;
+    const savedState = localStorage.getItem(getStorageKey(selectedProject));
+    if (savedState) {
+      try {
+        const { openFileIds, activeId } = JSON.parse(savedState);
+        // We'll reconcile these once files are fetched
+        if (activeId) setActiveFileId(activeId);
+      } catch (e) { console.error("Failed to hydrate workspace state", e); }
+    }
+  }, [selectedProject]);
+
+  // Persist Sidebar/Tabs state
+  useEffect(() => {
+    if (!selectedProject) return;
+    const state = {
+      openFileIds: openFiles.map(f => f.id),
+      activeId: activeFileId
+    };
+    localStorage.setItem(getStorageKey(selectedProject), JSON.stringify(state));
+  }, [openFiles, activeFileId, selectedProject]);
+
+  // Handle Draft Persistence (Unsaved Changes)
+  useEffect(() => {
+    if (activeFileId && code !== lastSavedContent.current) {
+      localStorage.setItem(getDraftKey(activeFileId), code);
+    } else if (activeFileId && code === lastSavedContent.current) {
+      localStorage.removeItem(getDraftKey(activeFileId));
+    }
+  }, [code, activeFileId]);
 
   const fetchProjects = useCallback(async () => {
     if (!profile) return;
@@ -85,16 +142,36 @@ export default function StudentWorkspace() {
     setTeamMembers(allMembers);
   }, [selectedProject]);
 
-  useEffect(() => { fetchProjects(); }, [fetchProjects]);
-  useEffect(() => { fetchTeam(); }, [fetchTeam]);
-
   const fetchFiles = useCallback(async () => {
     if (!selectedProject) return;
     const { data } = await supabase.from('workspace_files').select('*').eq('project_id', selectedProject).order('path');
-    if (data) setFiles(data as WorkspaceFile[]);
+    if (data) {
+      const fetchedFiles = data as WorkspaceFile[];
+      setFiles(fetchedFiles);
+
+      // Reconcile open files from storage
+      const savedState = localStorage.getItem(getStorageKey(selectedProject));
+      if (savedState) {
+        try {
+          const { openFileIds } = JSON.parse(savedState);
+          const restoredFiles = fetchedFiles.filter(f => openFileIds.includes(f.id));
+          setOpenFiles(restoredFiles);
+        } catch (e) {}
+      }
+    }
   }, [selectedProject]);
 
+  useEffect(() => { fetchProjects(); }, [fetchProjects]);
+  useEffect(() => { fetchTeam(); }, [fetchTeam]);
   useEffect(() => { fetchFiles(); }, [fetchFiles]);
+
+  useEffect(() => {
+    if (selectedProject && chatMessages.length === 0) {
+      setChatMessages([
+        { id: '1', role: 'ai', content: `Environment initialized for Node [${selectedProject.slice(0, 8)}]. Local device state synchronized.`, timestamp: new Date() }
+      ]);
+    }
+  }, [selectedProject]);
 
   useRealtime([
     {
@@ -104,59 +181,85 @@ export default function StudentWorkspace() {
         if (payload.eventType === 'INSERT') {
           setFiles((prev) => [...prev, payload.new as WorkspaceFile].sort((a, b) => a.path.localeCompare(b.path)));
         } else if (payload.eventType === 'UPDATE') {
-          setFiles((prev) => prev.map((f) => f.id === payload.new.id ? { ...payload.new as WorkspaceFile } : f));
-          
-          // If another person updated the file we are currently editing
-          if (activeFile?.id === payload.new.id && payload.new.updated_at !== activeFile.updated_at) {
-             const updatedFile = payload.new as WorkspaceFile;
-             // Only auto-update code if the remote content changed and we aren't mid-typing (or if we lost the race)
-             if (updatedFile.content !== lastSavedContent.current) {
-                // If the remote version is different from what we thought was last saved, someone else pushed.
-                // We'll update the activeFile meta, but leave the local 'code' state for the user unless it's a major divergence.
-                setActiveFile(updatedFile);
-                setTerminalOutput(p => p + `[SYNC] ${updatedFile.name} updated by cluster peer.\n`);
+          const updated = payload.new as WorkspaceFile;
+          setFiles((prev) => prev.map((f) => f.id === updated.id ? updated : f));
+          if (activeFileId === updated.id && updated.content !== code) {
+             if (updated.updated_at !== activeFile?.updated_at) {
+                setTerminalOutput(p => p + `[SYNC] Node ${updated.name} updated by cluster peer.\n`);
              }
           }
         } else if (payload.eventType === 'DELETE') {
           setFiles((prev) => prev.filter((f) => f.id !== payload.old.id));
-          if (activeFile?.id === payload.old.id) setActiveFile(null);
+          if (activeFileId === payload.old.id) {
+             setOpenFiles(prev => prev.filter(f => f.id !== payload.old.id));
+             setActiveFileId(null);
+          }
         }
       },
     },
-  ], [selectedProject, activeFile?.id]);
+  ], [selectedProject, activeFileId, code]);
 
   const openFile = (f: WorkspaceFile) => {
-    setActiveFile(f);
-    setCode(f.content || '');
+    if (!openFiles.find(of => of.id === f.id)) {
+      setOpenFiles([...openFiles, f]);
+    }
+    setActiveFileId(f.id);
+    
+    // Check for local draft first
+    const draft = localStorage.getItem(getDraftKey(f.id));
+    if (draft && draft !== f.content) {
+      setCode(draft);
+      toast.info(`Restored unsaved draft for ${f.name}`, { duration: 2000 });
+    } else {
+      setCode(f.content || '');
+    }
+    
     lastSavedContent.current = f.content || '';
-    setTerminalOutput(p => p + `[SYSTEM] Switched context: ${f.name}\n`);
+    setTerminalOutput(p => p + `[SYSTEM] Context bound: ${f.name}\n`);
+  };
+
+  const closeFile = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newOpenFiles = openFiles.filter(f => f.id !== id);
+    setOpenFiles(newOpenFiles);
+    if (activeFileId === id) {
+      const nextId = newOpenFiles.length > 0 ? newOpenFiles[newOpenFiles.length - 1].id : null;
+      setActiveFileId(nextId);
+      if (nextId) {
+         const next = newOpenFiles.find(f => f.id === nextId);
+         if (next) setCode(next.content);
+      }
+    }
+    // Clean up draft if no changes
+    if (localStorage.getItem(getDraftKey(id)) === files.find(f => f.id === id)?.content) {
+      localStorage.removeItem(getDraftKey(id));
+    }
   };
 
   const saveFile = async (contentToSave: string = code) => {
-    if (!activeFile) return;
+    if (!activeFileId) return;
     setSaving(true);
     const { error } = await supabase.from('workspace_files').update({ 
       content: contentToSave, 
       updated_at: new Date().toISOString() 
-    }).eq('id', activeFile.id);
+    }).eq('id', activeFileId);
     
-    if (error) toast.error('Sync collision detected');
+    if (error) toast.error('Cluster sync error');
     else {
       lastSavedContent.current = contentToSave;
+      localStorage.removeItem(getDraftKey(activeFileId));
+      setTerminalOutput(p => p + `[SYSTEM] Resource ${activeFileId.slice(0, 6)} committed to cloud.\n`);
     }
     setSaving(false);
   };
 
-  // Professional Debounced Auto-Sync for Team Collaboration
   useEffect(() => {
-    if (isAutoSync && activeFile && code !== lastSavedContent.current) {
+    if (isAutoSync && activeFileId && code !== lastSavedContent.current) {
       if (syncTimer.current) clearTimeout(syncTimer.current);
-      syncTimer.current = setTimeout(() => {
-        saveFile(code);
-      }, 1500); // 1.5s debounce for professional "save as you type" feel without hitting rate limits
+      syncTimer.current = setTimeout(() => saveFile(code), 3000); // Higher delay for pro auto-sync
     }
     return () => { if (syncTimer.current) clearTimeout(syncTimer.current); };
-  }, [code, isAutoSync, activeFile]);
+  }, [code, isAutoSync, activeFileId]);
 
   const createFile = async () => {
     if (!selectedProject || !newFileName) return;
@@ -164,19 +267,20 @@ export default function StudentWorkspace() {
       project_id: selectedProject,
       name: newFileName,
       path: `/${newFileName}`,
-      content: '// Collaborative code entry point...',
+      content: '// Resource initialized...',
       language: newFileLang,
       created_by: profile?.id,
     });
     if (error) toast.error(error.message);
     else {
-      toast.success('Resource cluster updated');
+      toast.success('Resource deployed to cluster');
       setNewFileName('');
     }
   };
 
   const deleteFile = async (id: string) => {
     await supabase.from('workspace_files').delete().eq('id', id);
+    localStorage.removeItem(getDraftKey(id));
     toast.success('Resource purged');
   };
 
@@ -184,238 +288,300 @@ export default function StudentWorkspace() {
     e.preventDefault();
     const cmd = terminalInput.trim().toLowerCase();
     if (!cmd) return;
-    
     let out = `\n$ ${terminalInput}\n`;
     if (cmd === 'ls') out += files.map(f => f.name).join('  ');
     else if (cmd === 'clear') { setTerminalOutput(''); setTerminalInput(''); return; }
-    else if (cmd === 'peers') out += teamMembers.map(m => `${m.name} (${m.role})`).join('\n');
-    else if (cmd === 'status') out += `Auto-Sync: ${isAutoSync ? 'ON' : 'OFF'}\nProject: ${projects.find(p => p.id === selectedProject)?.title}\nPeers: ${teamMembers.length}`;
+    else if (cmd === 'status') out += `Auto-Sync: ${isAutoSync ? 'READY' : 'OFF'}\nLocal Persistence: ACTIVE\nProject Bind: ${selectedProject}`;
     else out += `sh: command not found: ${cmd}`;
-    
     setTerminalOutput(prev => prev + out + '\n');
     setTerminalInput('');
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-6rem)] animate-fade-in bg-background">
-      {/* Professional Collaboration Header */}
-      <div className="flex items-center justify-between px-6 py-2.5 border-b border-border bg-card/70 backdrop-blur-xl sticky top-0 z-20 shadow-sm">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-3">
-             <div className="w-8 h-8 rounded-xl gradient-primary flex items-center justify-center shadow-lg shadow-primary/20">
-                <Code2 className="w-4 h-4 text-primary-foreground" />
-             </div>
-             <div>
-                <h1 className="text-xs font-black text-foreground uppercase tracking-[0.2em] italic">Engineering Cluster</h1>
-                <p className="text-[10px] text-muted-foreground font-bold flex items-center gap-1.5 mt-0.5">
-                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> 0ms Latency Optimized
-                </p>
-             </div>
-          </div>
-
-          <div className="h-8 w-[1px] bg-border/50 mx-2" />
-
-          <Select value={selectedProject} onValueChange={setSelectedProject}>
-            <SelectTrigger className="w-64 h-9 text-xs bg-muted/30 border-none font-bold tracking-tight">
-              <SelectValue placeholder="Select Grid Context" />
-            </SelectTrigger>
-            <SelectContent>
-              {projects.map((p) => <SelectItem key={p.id} value={p.id} className="text-xs font-medium">{p.title}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* Presence Indicator (The 4+ members) */}
-        <div className="flex items-center gap-4">
-           <div className="flex -space-x-3 items-center mr-2">
-              <TooltipProvider>
-                {teamMembers.map((m, i) => (
-                  <Tooltip key={m.id}>
-                    <TooltipTrigger asChild>
-                       <div 
-                         className="w-8 h-8 rounded-full border-2 border-card bg-muted flex items-center justify-center text-[10px] font-bold text-foreground overflow-hidden cursor-pointer"
-                         style={{ zIndex: 10 - i }}
-                       >
-                         {m.avatar_url ? <img src={m.avatar_url} className="w-full h-full object-cover" /> : m.name.charAt(0)}
-                       </div>
-                    </TooltipTrigger>
-                    <TooltipContent className="text-[10px] bg-slate-900 border-white/10">{m.name} ({m.role})</TooltipContent>
-                  </Tooltip>
-                ))}
-              </TooltipProvider>
-              {teamMembers.length > 5 && (
-                <div className="w-8 h-8 rounded-full border-2 border-card bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary z-0">+ {teamMembers.length - 5}</div>
-              )}
-           </div>
-
-           <div className="flex items-center gap-2">
-              <Badge variant="outline" className={`h-6 px-3 text-[10px] font-black tracking-widest uppercase border-primary/20 bg-primary/5 cursor-pointer hover:bg-primary/10 transition-all ${isAutoSync ? 'text-primary' : 'text-muted-foreground opacity-50'}`} onClick={() => setIsAutoSync(!isAutoSync)}>
-                 Auto-Sync {isAutoSync ? 'Active' : 'Disabled'}
-              </Badge>
-              <Button variant="outline" size="sm" className="h-9 px-4 text-[10px] font-bold uppercase tracking-widest border-border bg-transparent hover:bg-muted/50" onClick={saveFile} disabled={!activeFile || saving}>
-                 {saving ? <Zap className="w-3 h-3 mr-2 animate-spin" /> : <Save className="w-3 h-3 mr-2 text-primary" />}
-                 Manual Sync
-              </Button>
-              <Button size="sm" className="h-9 px-4 text-[10px] font-bold uppercase tracking-widest gradient-primary text-primary-foreground shadow-lg shadow-primary/20">
-                 <Share2 className="w-3 h-3 mr-2" /> Share Node
-              </Button>
-           </div>
-        </div>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden">
-        {/* Advanced Explorer */}
-        <aside className="w-72 border-r border-border bg-card/30 backdrop-blur-sm flex flex-col shrink-0">
-          <div className="px-5 py-3 border-b border-border/50 flex items-center justify-between">
-            <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest flex items-center gap-2">
-              <Folder className="w-4 h-4 text-primary" /> Manifest Explorer
-            </span>
-            <Dialog>
-              <DialogTrigger asChild>
-                <button className="w-7 h-7 flex items-center justify-center hover:bg-primary/10 rounded-xl transition-all text-primary border border-primary/20">
-                  <FilePlus className="w-3.5 h-3.5" />
-                </button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-xs bg-slate-900 border-white/10">
-                <DialogHeader><DialogTitle className="text-sm font-black uppercase tracking-widest">Initialize Node</DialogTitle></DialogHeader>
-                <div className="space-y-4 pt-4">
-                  <div className="space-y-2">
-                    <Label className="text-[10px] font-bold uppercase text-muted-foreground">Resource Name</Label>
-                    <Input value={newFileName} onChange={(e) => setNewFileName(e.target.value)} placeholder="index.js" className="h-10 bg-black/40 border-white/5 text-xs font-mono" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-[10px] font-bold uppercase text-muted-foreground">Language Class</Label>
-                    <Select value={newFileLang} onValueChange={setNewFileLang}>
-                      <SelectTrigger className="h-10 bg-black/40 border-white/5 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent className="bg-slate-900 border-white/10">
-                        {['javascript', 'typescript', 'python', 'html', 'css', 'json', 'markdown'].map(l => (
-                          <SelectItem key={l} value={l} className="text-xs font-mono">{l}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button onClick={createFile} className="w-full h-10 gradient-primary text-primary-foreground font-black uppercase text-[10px] tracking-widest">Deploy Resource</Button>
-                </div>
-              </DialogContent>
-            </Dialog>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto py-3 px-2 space-y-1">
-            {files.length === 0 ? (
-              <div className="py-20 text-center opacity-20">
-                <Activity className="w-10 h-10 mx-auto mb-4" />
-                <p className="text-[10px] font-bold uppercase tracking-widest">Awaiting Pulse...</p>
+    <div className="flex h-[calc(100vh-6rem)] animate-in fade-in duration-700 bg-[#0d0f14] overflow-hidden rounded-2xl border border-white/5 shadow-2xl">
+      <ResizablePanelGroup direction="horizontal" className="flex-1">
+        
+        {/* LEFT PANEL: MANIFEST & TEAM */}
+        <ResizablePanel defaultSize={18} minSize={12} maxSize={25} className="bg-[#161b22]/50 backdrop-blur-3xl border-r border-white/5 font-sans">
+          <div className="flex flex-col h-full">
+            <div className="p-4 border-b border-white/5 bg-black/20">
+              <div className="flex items-center justify-between mb-4">
+                 <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                   <Folder className="w-3.5 h-3.5 text-primary" /> Manifest
+                 </h2>
+                 <Dialog>
+                    <DialogTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-6 w-6 rounded-lg hover:bg-primary/10 text-primary">
+                        <FilePlus className="w-3.5 h-3.5" />
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="bg-[#1c2128] border-white/10 text-white shadow-2xl">
+                      <DialogHeader><DialogTitle className="text-xs font-black uppercase tracking-[0.2em]">Deploy New Resource</DialogTitle></DialogHeader>
+                      <div className="space-y-4 pt-4">
+                        <div className="space-y-2">
+                          <Label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">Resource Name</Label>
+                          <Input value={newFileName} onChange={(e) => setNewFileName(e.target.value)} placeholder="app.py" className="bg-black/40 border-white/10 h-10 text-xs font-mono focus:ring-1 focus:ring-primary" />
+                        </div>
+                        <div className="space-y-2">
+                           <Label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest">Language Class</Label>
+                           <Select value={newFileLang} onValueChange={setNewFileLang}>
+                             <SelectTrigger className="bg-black/40 border-white/10 h-10 text-xs font-mono"><SelectValue /></SelectTrigger>
+                             <SelectContent className="bg-[#1c2128] border-white/10 text-white">
+                               {['javascript', 'typescript', 'python', 'html', 'css', 'json', 'markdown'].map(l => (
+                                 <SelectItem key={l} value={l} className="text-xs font-mono">{l}</SelectItem>
+                               ))}
+                             </SelectContent>
+                           </Select>
+                        </div>
+                        <Button onClick={createFile} className="w-full h-10 gradient-primary text-primary-foreground font-black uppercase text-[10px] tracking-widest shadow-lg shadow-primary/20">Execute Deployment</Button>
+                      </div>
+                    </DialogContent>
+                 </Dialog>
               </div>
-            ) : (
-              files.map((f) => (
-                <div
-                  key={f.id}
-                  className={`flex items-center justify-between px-3 h-11 cursor-pointer text-xs rounded-xl transition-all group ${activeFile?.id === f.id ? 'bg-primary/10 text-primary font-bold shadow-inner' : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground'}`}
-                  onClick={() => openFile(f)}
-                >
-                  <span className="flex items-center gap-3 truncate">
-                    <FileCode className={`w-4 h-4 shrink-0 ${activeFile?.id === f.id ? 'text-primary' : 'text-muted-foreground/30'}`} />
-                    <span className="font-mono tracking-tight">{f.name}</span>
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${activeFile?.id === f.id ? 'bg-emerald-500 shadow-lg shadow-emerald-500/50' : 'bg-transparent'}`} />
-                    <button onClick={(e) => { e.stopPropagation(); deleteFile(f.id); }} className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-destructive/10 hover:text-destructive rounded-lg transition-all">
-                       <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+              <Select value={selectedProject} onValueChange={setSelectedProject}>
+                <SelectTrigger className="w-full text-[10px] h-9 bg-black/40 border-white/5 hover:border-white/10 transition-colors font-black tracking-[0.1em] uppercase">
+                  <SelectValue placeholder="Context Bind" />
+                </SelectTrigger>
+                <SelectContent className="bg-[#1c2128] border-white/10 text-white font-bold">
+                  {projects.map((p) => <SelectItem key={p.id} value={p.id} className="text-[10px] uppercase font-black tracking-tighter">PROJECT_{p.id.slice(0, 12)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <ScrollArea className="flex-1">
+              <div className="py-2">
+                <div className="px-4 mb-2">
+                  <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Local Resources</span>
                 </div>
-              ))
-            )}
-          </div>
+                {files.map((f) => {
+                  const hasDraft = localStorage.getItem(getDraftKey(f.id)) !== null;
+                  return (
+                    <div
+                      key={f.id}
+                      className={`flex items-center gap-2.5 px-4 h-10 cursor-pointer text-[12px] group transition-all ${activeFileId === f.id ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}
+                      onClick={() => openFile(f)}
+                    >
+                      <FileCode className={`w-3.5 h-3.5 shrink-0 ${activeFileId === f.id ? 'text-primary' : 'text-slate-600'}`} />
+                      <span className="truncate flex-1 font-medium italic tracking-tight">{f.name}</span>
+                      {hasDraft && <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse border border-amber-400 shadow-[0_0_5px_rgba(245,158,11,0.5)]" />}
+                      <button onClick={(e) => { e.stopPropagation(); deleteFile(f.id); }} className="opacity-0 group-hover:opacity-100 p-1.5 hover:text-red-400 transition-opacity">
+                         <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </ScrollArea>
 
-          <div className="p-4 border-t border-border/50 bg-muted/5 mt-auto space-y-3">
-             <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                <span className="flex items-center gap-2">< Zap className="w-3 h-3 text-amber-500" /> Cloud Sync</span>
-                <span className="text-primary">Operational</span>
-             </div>
-             <div className="h-1 w-full bg-muted rounded-full overflow-hidden">
-                <div className="h-full bg-primary animate-pulse w-full" />
-             </div>
+            <div className="p-4 border-t border-white/5 bg-black/20">
+               <div className="mb-4">
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-3 block">Neural Presence</span>
+                  <div className="flex -space-x-2">
+                    {teamMembers.map((m) => (
+                      <TooltipProvider key={m.id}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="w-7 h-7 rounded-full border-2 border-[#0d0f14] bg-slate-800 flex items-center justify-center overflow-hidden hover:-translate-y-1 transition-transform ring-1 ring-white/10 shadow-lg">
+                              {m.avatar_url ? <img src={m.avatar_url} className="w-full h-full object-cover" /> : <span className="text-[9px] font-bold">{m.name.charAt(0)}</span>}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent className="bg-black text-[9px] border-white/10 uppercase font-black tracking-widest shadow-2xl">{m.name} — {m.role}</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ))}
+                  </div>
+               </div>
+               <div className="flex items-center justify-between text-[9px] font-black mb-1 tracking-widest">
+                  <span className="text-slate-600 flex items-center gap-1.5"><Database className="w-3 h-3" /> PERSIST_CACHE</span>
+                  <span className="text-primary animate-pulse italic">STABLE</span>
+               </div>
+               <div className="h-0.5 w-full bg-slate-900 rounded-full overflow-hidden">
+                  <div className="h-full bg-primary w-full animate-pulse shadow-[0_0_10px_rgba(var(--primary),0.5)]" />
+               </div>
+            </div>
           </div>
-        </aside>
+        </ResizablePanel>
 
-        {/* Professional Master Editor */}
-        <div className="flex-1 flex flex-col min-w-0 bg-[#1e1e1e]">
-          <div className="flex-1 relative">
-            {activeFile ? (
-              <>
-                <div className="absolute top-4 right-8 z-30 flex items-center gap-3">
-                   <div className="flex items-center gap-2 text-[10px] font-bold text-emerald-400 bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full border border-emerald-500/20 shadow-2xl">
-                      <ShieldCheck className="w-3 h-3" /> Secure Stream Active
+        <ResizableHandle withHandle className="bg-white/5 hover:bg-primary/20 transition-colors" />
+
+        {/* CENTER PANEL: TABS, EDITOR & CONSOLE */}
+        <ResizablePanel defaultSize={60} minSize={30} className="bg-[#0b0c10] flex flex-col">
+          <div className="flex-1 flex flex-col min-w-0 h-full">
+            {/* Tab Bar */}
+            <div className="flex bg-[#161b22]/80 backdrop-blur-md border-b border-white/5 overflow-x-auto scrollbar-hide">
+              {openFiles.map(f => {
+                const hasDraft = localStorage.getItem(getDraftKey(f.id)) !== null;
+                return (
+                  <div
+                    key={f.id}
+                    onClick={() => openFile(f)}
+                    className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer text-[11px] font-bold border-r border-white/5 transition-all min-w-[140px] max-w-[200px] group ${activeFileId === f.id ? 'bg-[#0b0c10] text-primary border-t-2 border-primary shadow-2xl' : 'text-slate-600 hover:bg-[#1c2128] hover:text-slate-400'}`}
+                  >
+                    <FileCode className={`w-3.5 h-3.5 ${activeFileId === f.id ? 'text-primary' : 'text-slate-600'}`} />
+                    <span className="truncate flex-1 tracking-tight italic">{f.name}</span>
+                    {hasDraft && <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />}
+                    <X 
+                      className="w-3 h-3 text-slate-600 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity" 
+                      onClick={(e) => closeFile(f.id, e)}
+                    />
+                  </div>
+                );
+              })}
+              {openFiles.length === 0 && <div className="px-4 py-2.5 text-[10px] font-black text-slate-700 uppercase tracking-[0.3em] italic">Awaiting Module Binding...</div>}
+            </div>
+
+            <div className="flex-1 relative">
+              {activeFileId ? (
+                <>
+                  <div className="absolute top-4 right-8 z-30 flex items-center gap-3">
+                     <Badge variant="outline" className={`h-6 px-3 text-[9px] font-black tracking-[0.2em] border-primary/20 bg-black/60 backdrop-blur-xl cursor-pointer hover:bg-primary/5 transition-all shadow-2xl ${isAutoSync ? 'text-primary' : 'text-slate-600 opacity-50'}`} onClick={() => setIsAutoSync(!isAutoSync)}>
+                        PERSIST_{isAutoSync ? 'ON' : 'OFF'}
+                     </Badge>
+                     <Button size="sm" className={`h-7 px-4 text-[9px] font-black uppercase tracking-[0.2em] gradient-primary text-primary-foreground shadow-2xl transition-all ${saving ? 'opacity-50 scale-95' : 'hover:scale-105 active:scale-95'}`} onClick={() => saveFile(code)} disabled={saving}>
+                        {saving ? <Zap className="w-3 h-3 mr-2 animate-spin" /> : <Save className="w-3 h-3 mr-2" />}
+                        Commit
+                     </Button>
+                  </div>
+                  <Editor
+                    height="100%"
+                    language={activeFile?.language}
+                    value={code}
+                    onChange={(val) => setCode(val || '')}
+                    theme="vs-dark"
+                    options={{
+                      minimap: { enabled: true, scale: 0.8, side: 'right' },
+                      fontSize: 15,
+                      lineNumbers: 'on',
+                      automaticLayout: true,
+                      padding: { top: 24, bottom: 24 },
+                      scrollBeyondLastLine: false,
+                      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                      cursorStyle: 'line-thin',
+                      smoothScrolling: true,
+                      bracketPairColorization: { enabled: true },
+                      fontLigatures: true,
+                      renderWhitespace: 'none',
+                      renderControlCharacters: false,
+                      wordWrap: 'on',
+                    }}
+                  />
+                </>
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-700 bg-[#0b0c10] gap-6">
+                   <div className="w-20 h-20 rounded-3xl bg-slate-900 flex items-center justify-center border border-white/5 shadow-[0_0_50px_rgba(0,0,0,0.5)] animate-pulse">
+                      <Zap className="w-10 h-10 opacity-10" />
+                   </div>
+                   <div className="text-center space-y-2">
+                     <h2 className="text-[10px] font-black uppercase tracking-[0.5em] italic text-slate-600">No Active Module Binding</h2>
+                     <p className="text-[9px] font-bold text-slate-800 uppercase tracking-widest">Hydrate a resource from the manifest to begin engineering</p>
                    </div>
                 </div>
-                <Editor
-                  height="100%"
-                  language={activeFile.language}
-                  value={code}
-                  onChange={(val) => setCode(val || '')}
-                  theme="vs-dark"
-                  options={{
-                    minimap: { enabled: true, scale: 0.75, side: 'right' },
-                    fontSize: 15,
-                    lineNumbers: 'on',
-                    roundedSelection: true,
-                    scrollBeyondLastLine: false,
-                    readOnly: false,
-                    automaticLayout: true,
-                    padding: { top: 24, bottom: 24 },
-                    fontFamily: "'JetBrains Mono', 'Fira Code', 'IBM Plex Mono', monospace",
-                    cursorStyle: 'line-thin',
-                    cursorBlinking: 'smooth',
-                    bracketPairColorization: { enabled: true },
-                    smoothScrolling: true,
-                    letterSpacing: 0.5,
-                  }}
-                />
-              </>
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-6 bg-[#0a0a0a]">
-                <div className="w-24 h-24 rounded-3xl bg-slate-900 flex items-center justify-center border border-white/5 shadow-2xl animate-pulse">
-                  <CloudRain className="w-12 h-12 opacity-10" />
+              )}
+            </div>
+
+            {/* INTEGRATED TERMINAL */}
+            {isConsoleOpen && (
+              <div className="h-48 bg-[#050608] border-t border-white/5 flex flex-col font-mono shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+                <div className="px-4 py-1.5 bg-black/40 border-b border-white/5 flex items-center justify-between">
+                   <div className="flex items-center gap-4 text-[9px] font-black uppercase text-slate-500 tracking-widest">
+                      <span className="flex items-center gap-2"><Terminal className="w-3.5 h-3.5 text-primary" /> Kernel_Log_v2.4</span>
+                      <span className="text-emerald-500/80 flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Cluster: Online</span>
+                   </div>
+                   <Button variant="ghost" size="icon" className="h-6 w-6 hover:bg-white/5 text-slate-600 hover:text-white" onClick={() => setIsConsoleOpen(false)}>
+                      <X className="w-3 h-3" />
+                   </Button>
                 </div>
-                <div className="text-center space-y-2">
-                  <h3 className="text-base font-black text-foreground uppercase tracking-widest italic">Awaiting Resource Binding</h3>
-                  <p className="text-xs text-muted-foreground font-medium max-w-[240px] leading-relaxed mx-auto">Select a project node from the manifest to begin collaborative real-time sync.</p>
-                </div>
+                <ScrollArea className="flex-1 p-4 bg-[radial-gradient(circle_at_bottom_right,rgba(var(--primary),0.02)_0%,transparent_70%)]">
+                   <div className="text-[11px] text-emerald-400/80 whitespace-pre-wrap leading-relaxed italic opacity-80">
+                      {terminalOutput}
+                   </div>
+                   <form onSubmit={handleTerminalSubmit} className="flex items-center mt-2 group">
+                      <span className="text-primary mr-3 font-black text-[11px] tracking-tight">shell@node [~] %</span>
+                      <input 
+                        className="bg-transparent border-none outline-none flex-1 text-emerald-400 placeholder:opacity-10 text-[11px] caret-white" 
+                        value={terminalInput}
+                        onChange={(e) => setTerminalInput(e.target.value)}
+                        placeholder="execute_kernel_instruction..."
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                   </form>
+                </ScrollArea>
               </div>
             )}
           </div>
+        </ResizablePanel>
 
-          {/* Integrated Multi-Threaded Terminal */}
-          {showTerminal && (
-            <div className="h-1/3 min-h-[200px] bg-[#050505] border-t border-border/50 flex flex-col font-mono shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
-              <div className="px-6 py-2 text-[10px] font-black text-muted-foreground flex items-center justify-between border-b border-white/5 uppercase tracking-tighter">
-                <div className="flex items-center gap-4">
-                   <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-amber-500" /> BASH_INIT v9.4</div>
-                   <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-primary" /> CLUSTER_NODES: {teamMembers.length}</div>
-                </div>
-                <div className="flex items-center gap-6">
-                  <span className="hover:text-primary cursor-pointer transition-colors flex items-center gap-1"><Clock className="w-3 h-3" /> Uptime: 14h 22m</span>
-                  <span className="text-red-500/80 hover:text-red-500 cursor-pointer font-bold border-l border-white/10 pl-6" onClick={() => setTerminalOutput('')}>Clear Buffer</span>
-                </div>
+        <ResizableHandle withHandle className="bg-white/5 hover:bg-primary/20 transition-colors" />
+
+        {/* RIGHT PANEL: CO-PILOT AI */}
+        <ResizablePanel defaultSize={22} minSize={15} maxSize={30} className="bg-[#161b22]/40 backdrop-blur-3xl border-l border-white/5 flex flex-col">
+           <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/20">
+              <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                 <Sparkles className="w-3.5 h-3.5 text-primary" /> Co-Pilot
+              </h2>
+              <Badge variant="outline" className="text-[8px] border-primary/20 text-primary uppercase font-black px-1.5 h-4 tracking-tighter shadow-lg bg-primary/5">Intelligence Online</Badge>
+           </div>
+           
+           <ScrollArea className="flex-1 p-4">
+              <div className="space-y-6">
+                 {chatMessages.map(m => (
+                   <div key={m.id} className="space-y-2 animate-in slide-in-from-bottom-2 duration-300">
+                      <div className="flex items-center gap-2">
+                         <div className={`p-1.5 rounded-lg ${m.role === 'ai' ? 'bg-primary/10 border border-primary/20 shadow-lg shadow-primary/5' : 'bg-slate-800 border-white/5 shadow-md'}`}>
+                            {m.role === 'ai' ? <Cpu className="w-3.5 h-3.5 text-primary" /> : <Users className="w-3.5 h-3.5 text-slate-500" />}
+                         </div>
+                         <span className="text-[9px] font-black uppercase text-slate-500 tracking-widest">
+                            {m.role === 'ai' ? 'Core_System' : 'Lead_Eng'}
+                         </span>
+                         <span className="text-[8px] text-slate-800 font-bold ml-auto">{formatDistanceToNow(m.timestamp, { addSuffix: true })}</span>
+                      </div>
+                      <div className={`text-[11px] leading-relaxed p-4 rounded-2xl border ${m.role === 'ai' ? 'bg-primary/5 text-slate-300 border-primary/10 shadow-inner italic' : 'bg-slate-900/50 text-slate-400 border-white/5'}`}>
+                         {m.content}
+                      </div>
+                   </div>
+                 ))}
+                 <div ref={chatEndRef} />
               </div>
-              <div className="flex-1 p-6 text-xs text-emerald-400/90 overflow-y-auto leading-relaxed custom-scrollbar bg-[radial-gradient(circle_at_50%_50%,rgba(0,128,0,0.02)_0%,transparent_100%)]">
-                <pre className="whitespace-pre-wrap">{terminalOutput}</pre>
-                <form onSubmit={handleTerminalSubmit} className="flex mt-2 items-center">
-                  <span className="text-primary mr-3 font-black flex items-center gap-1">root@tech-hub <span className="text-foreground">~</span> #</span>
-                  <input
-                    className="flex-1 bg-transparent border-none outline-none text-emerald-400 caret-white font-mono placeholder:opacity-20"
-                    value={terminalInput}
-                    onChange={(e) => setTerminalInput(e.target.value)}
-                    placeholder="Execute kernel instruction..."
-                    autoFocus
-                  />
-                </form>
+           </ScrollArea>
+
+           <div className="p-4 bg-black/20 border-t border-white/5">
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                 <Button variant="outline" className="h-9 text-[9px] font-black uppercase tracking-widest border-white/5 hover:bg-primary/5 hover:text-primary transition-all group rounded-xl">
+                    <Code2 className="w-3.5 h-3.5 mr-2 text-slate-600 group-hover:text-primary transition-colors" /> Refactor
+                 </Button>
+                 <Button variant="outline" className="h-9 text-[9px] font-black uppercase tracking-widest border-white/5 hover:bg-primary/5 hover:text-primary transition-all group rounded-xl">
+                    <Bug className="w-3.5 h-3.5 mr-2 text-slate-600 group-hover:text-primary transition-colors" /> Debug
+                 </Button>
               </div>
-            </div>
-          )}
+              <div className="relative group">
+                 <div className="absolute inset-0 bg-primary/10 blur-2xl opacity-0 group-focus-within:opacity-100 transition-opacity duration-700 pointer-events-none" />
+                 <textarea 
+                    placeholder="Inquire AI Cluster Assistance..." 
+                    className="w-full bg-[#1c2128] border border-white/10 rounded-2xl px-4 py-3.5 text-xs text-white placeholder:text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary h-28 resize-none transition-all relative shadow-2xl scrollbar-hide"
+                 />
+                 <Button size="icon" className="absolute bottom-3 right-3 h-9 w-9 rounded-xl gradient-primary text-primary-foreground shadow-[0_0_20px_rgba(var(--primary),0.3)] hover:scale-110 active:scale-90 transition-all">
+                    <Send className="w-4 h-4" />
+                 </Button>
+              </div>
+           </div>
+        </ResizablePanel>
+
+      </ResizablePanelGroup>
+
+      {/* FOOTER STATUS BAR */}
+      {!isConsoleOpen && (
+        <div className="absolute bottom-0 left-0 right-0 h-8 bg-primary flex items-center px-4 justify-between text-[10px] font-black uppercase text-primary-foreground tracking-[0.2em] cursor-pointer group shadow-[0_-10px_30px_rgba(var(--primary),0.3)] hover:bg-primary/95 transition-all" onClick={() => setIsConsoleOpen(true)}>
+           <div className="flex items-center gap-6">
+              <div className="flex items-center gap-2 animate-in slide-in-from-left-2"><PanelsLeftBottom className="w-4 h-4" /> Operational Console</div>
+              <div className="flex items-center gap-2 opacity-60"><Activity className="w-3.5 h-3.5" /> Node: Primary_Cluster</div>
+           </div>
+           <div className="flex items-center gap-4">
+              <span className="opacity-60 italic">Persistent Local Storage: ACTIVE</span>
+              <div className="w-2 h-2 rounded-full bg-primary-foreground animate-pulse shadow-[0_0_10px_white]" />
+           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -10,11 +10,20 @@ import { toast } from 'sonner';
 import { 
   Folder, FileCode, History, Shield, Eye, BarChart2, 
   MessageCircle, Info, Users, Activity, Clock, ShieldAlert,
-  Terminal as TerminalIcon
+  Terminal as TerminalIcon, Sparkles, Cpu, Zap, Search, 
+  LayoutGrid, Settings, PanelsLeftBottom, X, ChevronRight,
+  Code2, Bug, Lock, ZapOff, Database, Layers
 } from 'lucide-react';
 import { useRealtime } from '@/hooks/useRealtime';
 import { formatDistanceToNow } from 'date-fns';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { 
+  ResizableHandle, 
+  ResizablePanel, 
+  ResizablePanelGroup 
+} from '@/components/ui/resizable';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 
 interface WorkspaceFile {
   id: string;
@@ -33,14 +42,51 @@ interface TeamMember {
   avatar_url?: string;
 }
 
+interface ChatMessage {
+  id: string;
+  role: 'system' | 'ai' | 'user';
+  content: string;
+  type?: 'audit' | 'info' | 'warn' | 'error';
+  timestamp: Date;
+}
+
 export default function CompanyWorkspace() {
   const { profile } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState('');
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
-  const [activeFile, setActiveFile] = useState<WorkspaceFile | null>(null);
+  const [openFiles, setOpenFiles] = useState<WorkspaceFile[]>([]);
+  const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isConsoleOpen, setIsConsoleOpen] = useState(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const activeFile = openFiles.find(f => f.id === activeFileId) || null;
+
+  // Persistence Key Helper
+  const getStorageKey = (projectId: string) => `company_workspace_v1_${projectId}`;
+
+  // Hydrate persistence
+  useEffect(() => {
+    if (!selectedProject) return;
+    const saved = localStorage.getItem(getStorageKey(selectedProject));
+    if (saved) {
+      try {
+        const { activeId } = JSON.parse(saved);
+        if (activeId) setActiveFileId(activeId);
+      } catch (e) {}
+    }
+  }, [selectedProject]);
+
+  // Save persistence
+  useEffect(() => {
+    if (!selectedProject) return;
+    localStorage.setItem(getStorageKey(selectedProject), JSON.stringify({
+      openFileIds: openFiles.map(f => f.id),
+      activeId: activeFileId
+    }));
+  }, [openFiles, activeFileId, selectedProject]);
 
   const fetchProjects = useCallback(async () => {
     if (!profile) return;
@@ -70,12 +116,38 @@ export default function CompanyWorkspace() {
   const fetchFiles = useCallback(async () => {
     if (!selectedProject) return;
     const { data } = await supabase.from('workspace_files').select('*').eq('project_id', selectedProject).order('path');
-    if (data) setFiles(data as WorkspaceFile[]);
+    if (data) {
+      const fetched = data as WorkspaceFile[];
+      setFiles(fetched);
+      
+      // Reconcile open tabs
+      const saved = localStorage.getItem(getStorageKey(selectedProject));
+      if (saved) {
+        try {
+          const { openFileIds } = JSON.parse(saved);
+          setOpenFiles(fetched.filter(f => openFileIds.includes(f.id)));
+        } catch (e) {}
+      }
+    }
   }, [selectedProject]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
   useEffect(() => { fetchTeam(); }, [fetchTeam]);
   useEffect(() => { fetchFiles(); }, [fetchFiles]);
+
+  useEffect(() => {
+    if (selectedProject && chatMessages.length === 0) {
+      setChatMessages([
+        {
+          id: '1',
+          role: 'ai',
+          content: `Real-time Auditor established for Node [${selectedProject.slice(0, 12)}]. Persistent local state initialized. Monitoring engineering pulses.`,
+          type: 'info',
+          timestamp: new Date()
+        }
+      ]);
+    }
+  }, [selectedProject]);
 
   useRealtime([
     {
@@ -86,181 +158,295 @@ export default function CompanyWorkspace() {
   ], [selectedProject]);
 
   const openFile = (f: WorkspaceFile) => {
-    setActiveFile(f);
-    setAuditLogs(prev => [
-      { id: Date.now(), user: profile?.name || 'Admin', action: 'Accessed', target: f.name, time: new Date().toISOString() },
-      ...prev.slice(0, 15)
-    ]);
+    if (!openFiles.find(of => of.id === f.id)) {
+      setOpenFiles([...openFiles, f]);
+    }
+    setActiveFileId(f.id);
+    
+    const auditMsg: ChatMessage = {
+      id: Date.now().toString(),
+      role: 'ai',
+      content: `Performing deep audit of ${f.name}. Signal integrity verified. No security warnings detected in local buffer.`,
+      type: 'audit',
+      timestamp: new Date()
+    };
+    setChatMessages(prev => [...prev.slice(-10), auditMsg]);
+  };
+
+  const closeFile = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newOpenFiles = openFiles.filter(f => f.id !== id);
+    setOpenFiles(newOpenFiles);
+    if (activeFileId === id) {
+      setActiveFileId(newOpenFiles.length > 0 ? newOpenFiles[newOpenFiles.length - 1].id : null);
+    }
   };
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] animate-fade-in gap-6 bg-background/50">
-      {/* Executive Auditor Sidebar */}
-      <div className="w-80 flex flex-col gap-6 shrink-0">
-        <Card className="shadow-elevated border-none bg-card/60 backdrop-blur-xl overflow-hidden flex flex-col flex-1 border border-white/5">
-          <CardHeader className="p-6 border-b border-border bg-muted/20">
-             <div className="flex items-center justify-between mb-4">
-               <CardTitle className="text-[10px] font-black text-muted-foreground uppercase tracking-widest flex items-center gap-2">
-                 <Shield className="w-4 h-4 text-primary" /> Oversight Console
-               </CardTitle>
-               <Badge variant="outline" className="text-[9px] py-0 border-primary/20 text-primary">Live</Badge>
-             </div>
-             <Select value={selectedProject} onValueChange={setSelectedProject}>
-              <SelectTrigger className="w-full text-xs h-10 bg-background/50 border-none font-bold">
-                <SelectValue placeholder="Entity Scope" />
-              </SelectTrigger>
-              <SelectContent className="bg-slate-900 border-white/10">
-                {projects.map((p) => <SelectItem key={p.id} value={p.id} className="text-xs font-semibold">{p.title}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </CardHeader>
-          
-          <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
-            <div>
-               <h4 className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] mb-4 pl-2">Active Engineering Team</h4>
-               <div className="flex flex-wrap gap-2.5">
-                  <TooltipProvider>
-                    {teamMembers.map((m) => (
-                      <Tooltip key={m.id}>
-                        <TooltipTrigger asChild>
-                           <div className="w-10 h-10 rounded-2xl bg-muted border border-white/5 flex items-center justify-center overflow-hidden cursor-crosshair hover:scale-110 transition-transform">
-                              {m.avatar_url ? <img src={m.avatar_url} className="w-full h-full object-cover" /> : <span className="text-xs font-black">{m.name.charAt(0)}</span>}
-                           </div>
-                        </TooltipTrigger>
-                        <TooltipContent className="text-[10px] bg-black border-white/5">{m.name} — {m.role}</TooltipContent>
-                      </Tooltip>
-                    ))}
-                  </TooltipProvider>
-               </div>
+    <div className="flex h-[calc(100vh-6rem)] animate-in fade-in duration-1000 bg-[#0f1117] overflow-hidden rounded-2xl border border-white/5 shadow-2xl font-sans">
+      <ResizablePanelGroup direction="horizontal" className="flex-1">
+        
+        {/* LEFT PANEL: EXPLORER & TEAM */}
+        <ResizablePanel defaultSize={20} minSize={15} maxSize={30} className="bg-[#161b22]/50 backdrop-blur-3xl border-r border-white/5">
+          <div className="flex flex-col h-full">
+            <div className="p-4 border-b border-white/5 bg-black/40">
+              <div className="flex items-center justify-between mb-4">
+                 <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                   <Layers className="w-3.5 h-3.5 text-blue-400" /> Manifest_Resource
+                 </h2>
+                 <Badge variant="outline" className="h-4 text-[8px] bg-blue-500/10 text-blue-400 border-none px-1.5 uppercase font-black tracking-tighter">OVERSIGHT</Badge>
+              </div>
+              <Select value={selectedProject} onValueChange={setSelectedProject}>
+                <SelectTrigger className="w-full text-[10px] h-9 bg-black/40 border-white/5 focus:ring-1 focus:ring-blue-500 transition-all font-black uppercase tracking-widest text-slate-400">
+                  <SelectValue placeholder="Resource_Id" />
+                </SelectTrigger>
+                <SelectContent className="bg-[#1c2128] border-white/10 text-white font-bold">
+                  {projects.map((p) => <SelectItem key={p.id} value={p.id} className="text-[10px] uppercase font-bold tracking-tight">ENTITY_{p.id.slice(0, 16)}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
 
-            <Separator className="bg-border/50" />
-
-            <div>
-              <h4 className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] mb-4 pl-2">System Resources</h4>
-              <div className="space-y-1">
+            <ScrollArea className="flex-1">
+              <div className="py-2">
+                <div className="px-4 mb-2">
+                  <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Repository_Tree</span>
+                </div>
                 {files.map((f) => (
                   <div
                     key={f.id}
-                    className={`flex items-center gap-3 px-4 py-3 cursor-pointer text-xs rounded-xl transition-all group ${activeFile?.id === f.id ? 'bg-primary/10 text-primary font-black shadow-inner' : 'text-muted-foreground hover:bg-muted/10 hover:text-foreground'}`}
+                    className={`flex items-center gap-2.5 px-4 h-10 cursor-pointer text-[12px] group transition-all ${activeFileId === f.id ? 'bg-blue-500/10 text-blue-400 border-r-2 border-blue-500' : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}
                     onClick={() => openFile(f)}
                   >
-                    <FileCode className={`w-4 h-4 shrink-0 ${activeFile?.id === f.id ? 'text-primary' : 'text-muted-foreground/30'}`} />
-                    <span className="truncate mono tracking-tight">{f.name}</span>
+                    <FileCode className={`w-3.5 h-3.5 shrink-0 transition-colors ${activeFileId === f.id ? 'text-blue-400' : 'text-slate-600 group-hover:text-slate-400'}`} />
+                    <span className="truncate flex-1 font-medium italic tracking-tight uppercase text-[11px] font-mono">/{f.name}</span>
+                    <Clock className="w-3 h-3 opacity-0 group-hover:opacity-30 transition-opacity" />
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
-          
-          <div className="p-6 border-t border-border bg-muted/20 space-y-4 font-bold uppercase tracking-widest text-[10px]">
-             <div className="flex justify-between items-center"><span className="text-muted-foreground">Resource Load</span><span className="text-primary">L-04 Pulse</span></div>
-             <div className="h-1 w-full bg-muted rounded-full overflow-hidden"><div className="h-full bg-primary animate-pulse w-3/4" /></div>
-          </div>
-        </Card>
-      </div>
+            </ScrollArea>
 
-      {/* Primary Observer Plane */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <Card className="flex-1 shadow-elevated border-none bg-card flex flex-col overflow-hidden border border-white/5">
-          <CardHeader className="p-4 border-b border-border bg-muted/10 flex flex-row items-center justify-between">
-            <div className="flex items-center gap-6">
-               <div className="flex items-center gap-2 font-mono text-[9px] font-black text-emerald-400 uppercase tracking-tighter">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.5)]" /> Real-Time Auditor Plane
-               </div>
-               {activeFile && (
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-muted-foreground">
-                     <Clock className="w-3 h-3" /> Last Active: {formatDistanceToNow(new Date(activeFile.updated_at), { addSuffix: true })}
+            <div className="p-4 bg-black/40 border-t border-white/5 mt-auto">
+                <div className="mb-4">
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-3 block">Deployment_Force</span>
+                  <div className="flex -space-x-2">
+                    {teamMembers.map((m) => (
+                      <TooltipProvider key={m.id}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="w-7 h-7 rounded-full border-2 border-[#161b22] bg-slate-800 flex items-center justify-center overflow-hidden hover:-translate-y-1 transition-transform shadow-xl ring-1 ring-white/10">
+                              {m.avatar_url ? <img src={m.avatar_url} className="w-full h-full object-cover" /> : <span className="text-[9px] font-black uppercase">{m.name.charAt(0)}</span>}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent className="bg-black text-[9px] border-white/10 uppercase font-black tracking-[0.2em] shadow-2xl">{m.name} // {m.role}</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ))}
                   </div>
-               )}
-            </div>
-            <div className="flex items-center gap-2">
-               <Button size="sm" variant="outline" className="h-8 text-[10px] font-black uppercase tracking-widest border-border hover:bg-muted"><MessageCircle className="w-3.5 h-3.5 mr-2" /> Open Channel</Button>
-               <Button size="sm" className="h-8 text-[10px] font-black uppercase tracking-widest gradient-primary text-primary-foreground"><BarChart2 className="w-3.5 h-3.5 mr-2" /> Core Metrics</Button>
-            </div>
-          </CardHeader>
-          <div className="flex-1 relative bg-[#1e1e1e]">
-            {activeFile ? (
-              <>
-                <div className="absolute top-6 left-12 z-20 pointer-events-none opacity-20">
-                   <ShieldAlert className="w-32 h-32 text-primary" />
                 </div>
-                <Editor
-                  height="100%"
-                  language={activeFile.language}
-                  value={activeFile.content}
-                  theme="vs-dark"
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: true, side: 'right' },
-                    fontSize: 15,
-                    lineNumbers: 'on',
-                    automaticLayout: true,
-                    padding: { top: 24, bottom: 24 },
-                    scrollBeyondLastLine: false,
-                    wordWrap: 'on',
-                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                    smoothScrolling: true,
-                    cursorStyle: 'block',
-                  }}
-                />
-              </>
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground bg-[#0a0a0a] gap-4">
-                 <div className="w-20 h-20 rounded-full border border-dashed border-white/5 flex items-center justify-center bg-muted/5">
-                   <Eye className="w-8 h-8 opacity-20" />
-                 </div>
-                 <h2 className="text-xs font-black uppercase tracking-[0.3em] italic text-center">Awaiting System Broadcast</h2>
+                <div className="flex items-center justify-between text-[9px] font-black text-slate-500 mb-1 uppercase tracking-widest">
+                  <span className="flex items-center gap-1.5"><Database className="w-3 h-3" /> System_Link</span>
+                  <span className="text-blue-500 animate-pulse italic">OPTIMIZED</span>
+                </div>
+                <div className="h-0.5 w-full bg-slate-800 rounded-full overflow-hidden shadow-inner">
+                  <div className="h-full bg-blue-500 animate-infinite-scroll w-full shadow-[0_0_10px_rgba(59,130,246,0.6)]" />
+                </div>
+            </div>
+          </div>
+        </ResizablePanel>
+
+        <ResizableHandle withHandle className="bg-white/5 hover:bg-blue-500/20 transition-colors" />
+
+        {/* CENTER PANEL: TABS, EDITOR & CONSOLE */}
+        <ResizablePanel defaultSize={55} minSize={30} className="bg-[#0b0c10] flex flex-col">
+          <div className="flex-1 flex flex-col min-w-0 h-full">
+            {/* Tab Bar */}
+            <div className="flex bg-black/40 backdrop-blur-md border-b border-white/5 overflow-x-auto scrollbar-hide">
+              {openFiles.map(f => (
+                <div
+                  key={f.id}
+                  onClick={() => setActiveFileId(f.id)}
+                  className={`flex items-center gap-3 px-5 py-2.5 cursor-pointer text-[10px] font-black uppercase tracking-widest border-r border-white/5 transition-all min-w-[150px] max-w-[220px] group ${activeFileId === f.id ? 'bg-[#0b0c10] text-blue-400 border-t-2 border-t-blue-500 shadow-2xl' : 'text-slate-600 hover:bg-white/5 hover:text-slate-400'}`}
+                >
+                  <FileCode className={`w-3.5 h-3.5 ${activeFileId === f.id ? 'text-blue-400' : 'text-slate-600'}`} />
+                  <span className="truncate flex-1 italic">{f.name}</span>
+                  <X 
+                    className="w-3 h-3 text-slate-600 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity" 
+                    onClick={(e) => closeFile(f.id, e)}
+                  />
+                </div>
+              ))}
+              {openFiles.length === 0 && (
+                <div className="px-6 py-2.5 text-[9px] text-slate-700 font-extrabold uppercase tracking-[0.4em] italic">Awaiting_Module_Initialize...</div>
+              )}
+            </div>
+
+            <div className="flex-1 relative">
+              {activeFileId ? (
+                <>
+                  <div className="absolute top-4 right-8 z-30 flex items-center gap-3">
+                     <Badge variant="outline" className="h-6 px-3 text-[9px] font-black tracking-[0.2em] border-blue-500/20 bg-black/80 backdrop-blur-3xl text-blue-400 shadow-2xl">
+                        AUDIT_MODE_V2.4
+                     </Badge>
+                     <Button size="sm" variant="outline" className="h-7 px-4 text-[9px] font-black uppercase tracking-[0.2em] border-white/5 bg-slate-900/50 hover:bg-slate-800 text-slate-400">
+                        <BarChart2 className="w-3.5 h-3.5 mr-2" /> CORE_METRICS
+                     </Button>
+                  </div>
+                  <Editor
+                    height="100%"
+                    language={activeFile?.language}
+                    value={activeFile?.content || ''}
+                    theme="vs-dark"
+                    options={{
+                      readOnly: true,
+                      minimap: { enabled: true, side: 'right', scale: 0.8 },
+                      fontSize: 15,
+                      lineNumbers: 'on',
+                      automaticLayout: true,
+                      padding: { top: 24, bottom: 24 },
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                      cursorStyle: 'block',
+                      smoothScrolling: true,
+                      renderWhitespace: 'none',
+                      fontLigatures: true,
+                      bracketPairColorization: { enabled: true },
+                    }}
+                  />
+                </>
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600 bg-[#0b0c10] gap-8">
+                   <div className="w-24 h-24 relative group">
+                      <div className="absolute inset-0 bg-blue-500/10 blur-3xl rounded-full animate-pulse transition-all group-hover:scale-125" />
+                      <div className="relative border border-white/10 rounded-[2.5rem] p-8 bg-[#161b22] shadow-[0_0_80px_rgba(0,0,0,0.8)]">
+                        <TerminalIcon className="w-10 h-10 opacity-10" />
+                      </div>
+                   </div>
+                   <div className="text-center space-y-2">
+                     <h2 className="text-[10px] font-black uppercase tracking-[0.6em] italic text-slate-700">Audit_Context_Empty</h2>
+                     <p className="text-[9px] font-bold text-slate-800 uppercase tracking-widest bg-white/5 px-4 py-1.5 rounded-full">Hydrate_Entity_To_Perform_Analysis</p>
+                   </div>
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Console */}
+            {isConsoleOpen && (
+              <div className="h-44 bg-[#050608] border-t border-white/5 flex flex-col font-mono shadow-[0_-15px_40px_rgba(0,0,0,0.6)]">
+                <div className="flex items-center justify-between px-6 py-2 border-b border-white/5 bg-black/40">
+                  <div className="flex items-center gap-6">
+                    <span className="text-[9px] font-black text-blue-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                      <TerminalIcon className="w-3.5 h-3.5" /> AUDITOR_SHELL_V4
+                    </span>
+                    <span className="text-[9px] text-slate-700 font-bold uppercase flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-md animate-pulse" /> SYSTEM_PULSE: STABLE
+                    </span>
+                  </div>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 hover:bg-white/5 text-slate-700 group" onClick={() => setIsConsoleOpen(false)}>
+                    <X className="w-3 h-3 group-hover:text-white" />
+                  </Button>
+                </div>
+                <ScrollArea className="flex-1 p-5 overflow-y-auto bg-[radial-gradient(circle_at_bottom_right,rgba(var(--blue),0.02)_0%,transparent_80%)]">
+                    <div className="space-y-1.5 text-[11px] text-slate-600 font-medium">
+                       <p className="text-blue-500/80 tracking-tight flex items-center gap-2">
+                         [LOG] <span className="text-slate-500 whitespace-nowrap">AUDIT_CONTEXT: Persistent local buffer state synchronized for PROJECT_{selectedProject.slice(0, 8)}</span>
+                       </p>
+                       <p className="text-emerald-500/80 tracking-tight flex items-center gap-2">
+                         [INFO] <span className="text-slate-500">Resource integrity scan recurring; no unauthenticated drift detected.</span>
+                       </p>
+                       <p className="text-slate-700 italic mt-2 opacity-50 underline decoration-slate-800">Listening to engineering stream node ID: {selectedProject || 'AWAITING_ID'}</p>
+                    </div>
+                </ScrollArea>
               </div>
             )}
           </div>
-        </Card>
-      </div>
+        </ResizablePanel>
 
-      {/* Intelligence & Audit Feed */}
-      <div className="w-80 flex flex-col gap-6 shrink-0">
-         <Card className="flex-1 shadow-elevated border-none bg-card/60 backdrop-blur-xl overflow-hidden flex flex-col border border-white/5">
-            <CardHeader className="p-6 border-b border-border bg-muted/20">
-               <CardTitle className="text-[10px] font-black text-muted-foreground uppercase tracking-widest flex items-center gap-2">
-                 <History className="w-4 h-4 text-primary" /> Entity Intelligence
-               </CardTitle>
-            </CardHeader>
-            <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-               <div className="space-y-4">
-                 {auditLogs.length === 0 ? (
-                    <div className="py-20 text-center opacity-20 space-y-3">
-                       <TerminalIcon className="w-8 h-8 mx-auto" />
-                       <p className="text-[10px] uppercase font-black">Waiting for Data Stream</p>
-                    </div>
-                 ) : (
-                    auditLogs.map(log => (
-                       <div key={log.id} className="relative pl-5 border-l-2 border-primary/20 pb-2">
-                          <div className="absolute -left-[6px] top-1 w-2.5 h-2.5 rounded-full bg-primary shadow-lg shadow-primary/50" />
-                          <p className="text-[10px] font-black text-foreground leading-tight uppercase tracking-tight">{log.action} <span className="text-primary italic">{log.target}</span></p>
-                          <p className="text-[9px] text-muted-foreground mt-2 font-bold uppercase flex justify-between">
-                             <span>ID: {log.user.slice(0, 8)}</span>
-                             <span>{formatDistanceToNow(new Date(log.time), { addSuffix: true })}</span>
-                          </p>
-                       </div>
-                    ))
-                 )}
-               </div>
+        <ResizableHandle withHandle className="bg-white/5 hover:bg-blue-500/20 transition-colors" />
 
-               <Separator className="bg-border/50" />
-
-               <div className="p-5 rounded-3xl bg-primary/5 border border-primary/10 space-y-3">
-                  <p className="text-[10px] font-black text-primary uppercase tracking-widest">Auditor Insight</p>
-                  <p className="text-xs font-medium leading-relaxed italic">"Live pulse detected. The engineering team is currently concentrating on root resource modifications."</p>
-               </div>
+        {/* RIGHT PANEL: AI AUDITOR CHAT */}
+        <ResizablePanel defaultSize={22} minSize={15} maxSize={30} className="bg-[#161b22]/40 backdrop-blur-3xl border-l border-white/5 flex flex-col">
+          <div className="p-4 border-b border-white/5 flex items-center justify-between bg-black/20">
+            <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+               <Sparkles className="w-3.5 h-3.5 text-blue-400" /> Auditor_IA
+            </h2>
+            <div className="flex gap-2">
+              <Button size="icon" variant="ghost" className="h-7 w-7 rounded-lg hover:bg-white/5 text-slate-600"><History className="w-3.5 h-3.5" /></Button>
+              <Button size="icon" variant="ghost" className="h-7 w-7 rounded-lg hover:bg-white/5 text-slate-600"><Settings className="w-3.5 h-3.5" /></Button>
             </div>
-            
-            <div className="p-6 bg-slate-900 mt-auto">
-               <Button variant="ghost" className="w-full text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground hover:text-primary h-10 border border-white/5">Export Audit Master</Button>
+          </div>
+
+          <ScrollArea className="flex-1 p-5 shadow-inner">
+            <div className="space-y-6">
+              {chatMessages.map((msg) => (
+                <div key={msg.id} className="space-y-3 animate-in slide-in-from-bottom-2 duration-500">
+                  <div className="flex items-center gap-2.5">
+                    {msg.role === 'ai' ? (
+                      <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 shadow-lg shadow-blue-500/5">
+                        <Cpu className="w-3.5 h-3.5 text-blue-400" />
+                      </div>
+                    ) : (
+                      <div className="p-1.5 rounded-lg bg-slate-800 border border-white/5 shadow-md">
+                        <Users className="w-3.5 h-3.5 text-slate-500" />
+                      </div>
+                    )}
+                    <span className="text-[9px] font-black uppercase text-slate-500 tracking-[0.1em]">
+                      {msg.role === 'ai' ? 'Audit_Core' : 'Exec_Observer'}
+                    </span>
+                    <span className="text-[8px] text-slate-800 font-bold ml-auto">{formatDistanceToNow(msg.timestamp, { addSuffix: true })}</span>
+                  </div>
+                  <div className={`text-[11px] leading-relaxed p-4 rounded-2xl border ${
+                    msg.type === 'warn' ? 'bg-amber-500/5 text-amber-200 border-amber-500/10 italic' :
+                    msg.type === 'audit' ? 'bg-blue-500/5 text-blue-200 border-blue-500/10 font-bold' :
+                    'bg-slate-900/40 text-slate-400 border border-white/5'
+                  } shadow-md`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              <div ref={scrollRef} />
             </div>
-         </Card>
-      </div>
+          </ScrollArea>
+
+          <div className="p-5 bg-black/20 mt-auto border-t border-white/5">
+             <div className="mb-4">
+                <div className="grid grid-cols-2 gap-2">
+                   <Button variant="outline" className="h-9 text-[9px] font-black uppercase tracking-widest border-white/5 bg-slate-900/50 shadow-inner group hover:border-blue-500/40 hover:text-blue-400 transiton-all">
+                      <Bug className="w-3.5 h-3.5 mr-2 text-slate-600 group-hover:text-blue-400" /> FIND_BUGS
+                   </Button>
+                   <Button variant="outline" className="h-9 text-[9px] font-black uppercase tracking-widest border-white/5 bg-slate-900/50 shadow-inner group hover:border-emerald-500/40 hover:text-emerald-400 transition-all">
+                      <Lock className="w-3.5 h-3.5 mr-2 text-slate-600 group-hover:text-emerald-400" /> SEC_SWEEP
+                   </Button>
+                </div>
+             </div>
+             <div className="relative group">
+                <div className="absolute inset-0 bg-blue-500/10 blur-2xl opacity-0 group-focus-within:opacity-100 transition-opacity duration-1000 -z-10" />
+                <textarea 
+                  placeholder="Inquire_Auditor_State..." 
+                  className="w-full bg-[#1c2128] border border-white/10 rounded-2xl px-4 py-4 text-xs text-white placeholder:text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all resize-none h-24 scrollbar-hide relative shadow-2xl"
+                />
+                <Button size="icon" className="absolute bottom-3 right-3 h-8 w-8 rounded-xl bg-blue-600 hover:bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.5)] active:scale-90 transition-all">
+                  <Zap className="w-4 h-4 text-white" />
+                </Button>
+             </div>
+          </div>
+        </ResizablePanel>
+
+      </ResizablePanelGroup>
+
+      {/* Persistent Status Bar (Bottom) */}
+      {!isConsoleOpen && (
+        <div className="absolute bottom-0 left-0 right-0 h-8 bg-blue-600 flex items-center px-4 justify-between text-[9px] font-black uppercase text-white tracking-[0.2em] cursor-pointer hover:bg-blue-500 transition-all shadow-[0_-10px_20px_rgba(59,130,246,0.3)]" onClick={() => setIsConsoleOpen(true)}>
+           <div className="flex items-center gap-6">
+              <div className="flex items-center gap-2"><PanelsLeftBottom className="w-4 h-4" /> Expand_Operational_Console</div>
+              <div className="flex items-center gap-2 opacity-60"><Activity className="w-3.5 h-3.5" /> Link: Primary_Stream_V1</div>
+           </div>
+           <div className="flex items-center gap-4">
+              <span className="opacity-60 italic">Persistent_Local_Cache: READY</span>
+              <div className="w-2 h-2 rounded-full bg-white animate-pulse shadow-glow" />
+           </div>
+        </div>
+      )}
     </div>
   );
 }
-
-const Separator = ({ className }: { className?: string }) => <div className={`h-[1px] w-full ${className}`} />;
