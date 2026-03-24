@@ -31,7 +31,7 @@ function getProgress(milestones: any[]) {
   return Math.round((done / milestones.length) * 100);
 }
 
-export default function Milestones() {
+export default function CompanyMilestones() {
   const { profile } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [milestones, setMilestones] = useState<Record<string, any[]>>({});

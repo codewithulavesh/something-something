@@ -35,7 +35,7 @@ const SORT_OPTIONS = [
   { label: 'Budget: Low to High', value: 'budget_asc' },
 ];
 
-export default function BrowseProjects() {
+export default function StudentBrowse() {
   const { profile } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [search, setSearch] = useState('');

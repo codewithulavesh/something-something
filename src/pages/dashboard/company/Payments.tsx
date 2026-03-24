@@ -16,7 +16,7 @@ const statusConfig: Record<string, { label: string; color: string; icon: any }> 
   refunded: { label: 'Refunded', color: 'bg-slate-500/15 text-slate-400 border-slate-500/20', icon: RefreshCw },
 };
 
-export default function Payments() {
+export default function CompanyPayments() {
   const { profile } = useAuth();
   const [payments, setPayments] = useState<any[]>([]);
   const [releasing, setReleasing] = useState<string | null>(null);

@@ -21,7 +21,7 @@ interface WorkspaceFile {
   updated_at: string;
 }
 
-export default function Workspace() {
+export default function CompanyWorkspace() {
   const { profile } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProject, setSelectedProject] = useState('');
